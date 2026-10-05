@@ -9,8 +9,7 @@ Usage and behaviour: README.md. Writing screening profiles: doc/profiles.md.
 - Use `float`, not `Decimal`. Yahoo rate limiting is the simple `_throttle` in
   `market_data/yahoo_finance.py`, not pyrate_limiter.
 - `screener/analytics/` holds pure functions: date-indexed pandas Series (normally `adj_close`) in,
-  `float | None` out. No database or Yahoo code there, so it can move back to `~/Documents/portfolio` later.
-- `~/Documents/portfolio` is read-only: copy code from it, never edit it.
+  `float | None` out. No database or Yahoo code there, so it stays portable.
 - NULL means "not computable" and is never replaced by 0. Missing data must stay visible in `explain`.
 - Profile field names are whitelisted before SQL is built; values only ever become SQL parameters.
 
