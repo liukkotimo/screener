@@ -7,7 +7,7 @@ eliminated and why.
 ## Setup
 
 ```bash
-python3.13 -m venv venv
+python3.13 -m venv venv            # 3.13 is just that I prefer it. Should work with 3.10++
 venv/bin/pip install -r requirements.txt
 venv/bin/pip install -e .          # provides the `screener` command (or use `python -m screener`)
 ```
@@ -73,26 +73,7 @@ A profile is a YAML file with strictly sequential steps; each step only sees the
 one (step 1: all active items). See `profiles/` for examples (`falling_knives.yaml`, `steady_dividend.yaml`,
 `example.yaml`).
 
-```yaml
-name: example
-steps:
-  - {attr: exchange, op: in, value: [HEL, STO, NYQ]}
-  - {metric: market_cap_eur, op: ">", value: 1000000000}
-  - label: big fall within 1 or 3 years       # optional, shown in output
-    any_of:
-      - {metric: perf_1y, op: "<", value: -0.33}
-      - {metric: perf_3y, op: "<", value: -0.33}
-```
-
-- `attr`: item columns `ticker name type exchange exchange_name country currency sector industry source`
-  (text comparison is case-sensitive; values as Yahoo gives them, e.g. exchange `HEL`, type `EQUITY`).
-- `metric`: any `item_metrics` column (`screener metrics --list`).
-- `op`: `<  <=  >  >=  ==  !=  between [lo, hi]  in [..]  not_in [..]`.
-- `any_of` / `all_of` combine conditions within one step (may be nested).
-
-Missing data follows SQL logic: a condition on a NULL value is unknown. `any_of` passes if any part is true;
-`all_of` fails if any part is false; when the known parts do not decide, the item fails with reason
-`missing data: <metric>`. Items without a metrics row for the as-of date fail metric steps the same way.
+For more information see [profiles.md](doc/profiles.md)
 
 ```bash
 screener screen --profile profiles/falling_knives.yaml          # uses the latest metrics as-of date
