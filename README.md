@@ -114,5 +114,5 @@ No data is included in this repository.
 
 ## License
 
-Copyright (C) 2026 the screener authors. Licensed under the GNU General Public License, version 3 or
+Copyright (C) 2026 Timo Liukko. Licensed under the GNU General Public License, version 3 or
 (at your option) any later version (GPL-3.0-or-later). See [LICENSE](LICENSE).
