@@ -1,0 +1,23 @@
+# Small test universe across exchanges, currencies and item types.
+ticker
+NOKIA.HE     # Helsinki, EUR
+SAMPO.HE
+KNEBV.HE
+VOLV-B.ST    # Stockholm, SEK
+ERIC-B.ST
+NOVO-B.CO    # Copenhagen, DKK
+AAPL         # US, USD
+MSFT
+JNJ
+SAP.DE       # Xetra, EUR
+ASML.AS      # Amsterdam
+MC.PA        # Paris
+NESN.SW      # Swiss, CHF
+SHEL.L       # London, GBp (pence)
+ULVR.L
+7203.T       # Tokyo, JPY
+SPY          # ETF, USD
+IWDA.AS      # ETF, EUR
+VWCE.DE      # ETF, EUR
+VFIAX        # mutual fund, USD
+NOSUCH.XX    # deliberately invalid: must be logged, not abort the run

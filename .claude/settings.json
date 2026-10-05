@@ -1,0 +1,9 @@
+{
+    "permissions": {
+        "deny": [
+            "Edit(~/Documents/portfolio/**)",
+            "Write(~/Documents/portfolio/**)",
+            "NotebookEdit(~/Documents/portfolio/**)"
+        ]
+    }
+}

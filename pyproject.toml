@@ -1,0 +1,14 @@
+[project]
+name = "screener"
+version = "0.1.0"
+description = "Explainable screener for stocks, ETFs and funds on Yahoo Finance data"
+requires-python = ">=3.13"
+
+[project.scripts]
+screener = "screener.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["screener*"]
+
+[tool.setuptools.package-data]
+screener = ["migrations/*.sql"]
