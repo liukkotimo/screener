@@ -1,0 +1,9 @@
+# Low-risk dividend payers: shows that profiles are not tied to one strategy.
+name: steady_dividend
+steps:
+  - {attr: type, op: ==, value: EQUITY}
+  - {attr: sector, op: not_in, value: [Energy, Basic Materials]}
+  - {metric: market_cap_eur, op: ">=", value: 10000000000}
+  - {metric: dividend_yield, op: ">=", value: 0.025}
+  - {metric: volatility_1y, op: "<=", value: 0.25}
+  - {metric: max_drawdown_3y, op: ">=", value: -0.35}

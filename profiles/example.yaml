@@ -1,0 +1,9 @@
+# The example from the project brief.
+name: example
+steps:
+  - {attr: exchange, op: in, value: [HEL, STO, NYQ]}
+  - {metric: market_cap_eur, op: ">", value: 1000000000}
+  - {metric: perf_3m, op: between, value: [-0.05, 0.05]}
+  - any_of:
+      - {metric: perf_1y, op: "<", value: -0.33}
+      - {metric: perf_3y, op: "<", value: -0.33}

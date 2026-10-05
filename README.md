@@ -1,7 +1,7 @@
 # screener
 
 Explainable screener for stocks, ETFs and funds on Yahoo Finance data, stored in a single SQLite file.
-Design goal: for any item you can see exactly which data it has and (later) at which screening step it was
+Design goal: for any item you can see exactly which data it has and at which screening step it was
 eliminated and why.
 
 ## Setup
@@ -66,6 +66,48 @@ Rules that apply to every metric:
 - `dividend_yield` uses the plain close (adj_close would inflate it).
 
 The calculations live in `screener/analytics/` as plain functions on a pandas Series (no database code).
+
+## Screening
+
+A profile is a YAML file with strictly sequential steps; each step only sees the survivors of the previous
+one (step 1: all active items). See `profiles/` for examples (`falling_knives.yaml`, `steady_dividend.yaml`,
+`example.yaml`).
+
+```yaml
+name: example
+steps:
+  - {attr: exchange, op: in, value: [HEL, STO, NYQ]}
+  - {metric: market_cap_eur, op: ">", value: 1000000000}
+  - label: big fall within 1 or 3 years       # optional, shown in output
+    any_of:
+      - {metric: perf_1y, op: "<", value: -0.33}
+      - {metric: perf_3y, op: "<", value: -0.33}
+```
+
+- `attr`: item columns `ticker name type exchange exchange_name country currency sector industry source`
+  (text comparison is case-sensitive; values as Yahoo gives them, e.g. exchange `HEL`, type `EQUITY`).
+- `metric`: any `item_metrics` column (`screener metrics --list`).
+- `op`: `<  <=  >  >=  ==  !=  between [lo, hi]  in [..]  not_in [..]`.
+- `any_of` / `all_of` combine conditions within one step (may be nested).
+
+Missing data follows SQL logic: a condition on a NULL value is unknown. `any_of` passes if any part is true;
+`all_of` fails if any part is false; when the known parts do not decide, the item fails with reason
+`missing data: <metric>`. Items without a metrics row for the as-of date fail metric steps the same way.
+
+```bash
+screener screen --profile profiles/falling_knives.yaml          # uses the latest metrics as-of date
+screener screen --profile profiles/falling_knives.yaml --from-step 6   # re-use stored steps 1-5
+screener explain NOVO-B.CO               # every step with tested values; where and why it was eliminated
+screener explain NOVO-B.CO --run 12
+screener runs                            # list runs
+screener show-run 12                     # funnel and survivors
+screener show-run 12 --step 4            # everything eliminated at step 4, with reasons
+screener prune --keep 10                 # keep the newest 10 runs per profile (or --run ID)
+```
+
+Every candidate of every step is stored in `screen_step_item` with its tested values, pass/fail and reason.
+`--from-step N` copies steps 1..N-1 from the latest run of the same profile (or `--base-run ID`); it refuses
+if any of those steps changed or the as-of date differs.
 
 ## Inspecting
 

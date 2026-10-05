@@ -51,6 +51,45 @@ def cmd_metrics(conn, args):
     print('metrics:', calc_metrics(conn, args.asof, args.tickers))
 
 
+def cmd_screen(conn, args):
+    from screener.screening.engine import metric_columns, run_screen
+    from screener.screening.profile import ProfileError, load_profile
+    from screener.screening.report import funnel, survivors
+    try:
+        profile = load_profile(args.profile, metric_columns(conn))
+        run_id = run_screen(conn, profile, args.asof, args.from_step, args.base_run)
+    except (ProfileError, ValueError) as e:
+        sys.exit(f'error: {e}')
+    run = conn.execute('SELECT * FROM screen_run WHERE run_id = ?', (run_id,)).fetchone()
+    print(f'run {run_id}  {profile.name}  as of {run["asof_date"]}')
+    if run['parent_run_id']:
+        print(f'steps 1..{args.from_step - 1} re-used from run {run["parent_run_id"]}')
+    print()
+    print(funnel(conn, run_id), end='\n\n')
+    print(survivors(conn, run_id))
+    print(f'\nwhy was X eliminated?  screener explain <ticker> --run {run_id}')
+
+
+def cmd_explain(conn, args):
+    from screener.screening.report import explain
+    print(explain(conn, args.ticker, args.run))
+
+
+def cmd_runs(conn, args):
+    from screener.screening.report import list_runs
+    print(list_runs(conn, args.limit))
+
+
+def cmd_show_run(conn, args):
+    from screener.screening.report import show_run
+    print(show_run(conn, args.run, args.step))
+
+
+def cmd_prune(conn, args):
+    from screener.screening.engine import prune_runs
+    print(f'{prune_runs(conn, args.keep, args.run)} run(s) deleted')
+
+
 def cmd_status(conn, args):
     if args.ticker:
         return _status_ticker(conn, args.ticker.upper())
@@ -116,6 +155,33 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument('--tickers', nargs='+', help='only these tickers')
     s.add_argument('--list', action='store_true', help='list metric definitions and exit')
     s.set_defaults(func=cmd_metrics)
+
+    s = sub.add_parser('screen', help='run a screening profile')
+    s.add_argument('--profile', required=True, help='YAML profile file')
+    s.add_argument('--asof', help='metrics as-of date (default: latest calculated)')
+    s.add_argument('--from-step', type=int, default=1, help='re-use stored results of earlier steps')
+    s.add_argument('--base-run', help='run to re-use steps from (default: latest run of this profile)')
+    s.set_defaults(func=cmd_screen)
+
+    s = sub.add_parser('explain', help='show at which step and why an item was eliminated')
+    s.add_argument('ticker')
+    s.add_argument('--run', default='latest', help='run id or "latest" (default)')
+    s.set_defaults(func=cmd_explain)
+
+    s = sub.add_parser('runs', help='list screening runs')
+    s.add_argument('--limit', type=int, default=20)
+    s.set_defaults(func=cmd_runs)
+
+    s = sub.add_parser('show-run', help='funnel and survivors of a run, or items eliminated at one step')
+    s.add_argument('run', nargs='?', default='latest', help='run id or "latest" (default)')
+    s.add_argument('--step', type=int, help='list items eliminated at this step, with reasons')
+    s.set_defaults(func=cmd_show_run)
+
+    s = sub.add_parser('prune', help='delete old screening runs')
+    g = s.add_mutually_exclusive_group()
+    g.add_argument('--keep', type=int, default=10, help='keep the newest N runs per profile (default 10)')
+    g.add_argument('--run', type=int, help='delete just this run')
+    s.set_defaults(func=cmd_prune)
 
     s = sub.add_parser('status', help='data overview, or details of one ticker')
     s.add_argument('ticker', nargs='?')
