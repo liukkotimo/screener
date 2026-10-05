@@ -3,3 +3,6 @@ data/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+*.db
+*.sqlite
+*.sqlite3

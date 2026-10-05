@@ -102,3 +102,17 @@ screener status SHEL.L     # one item: attributes, price range, dividends, last 
 ```bash
 venv/bin/pytest
 ```
+
+## Data and disclaimer
+
+This project retrieves market data from Yahoo Finance. The data is not covered by this project's license
+and remains subject to Yahoo's terms of service. Yahoo's data is generally intended for personal use, so
+check their terms before using it for anything else.
+
+This software is for research and educational purposes only and is not financial advice.
+No data is included in this repository.
+
+## License
+
+Copyright (C) 2026 the screener authors. Licensed under the GNU General Public License, version 3 or
+(at your option) any later version (GPL-3.0-or-later). See [LICENSE](LICENSE).
