@@ -42,6 +42,15 @@ def cmd_update(conn, args):
         print('fx:', update_fx(conn, yahoo, args.years))
 
 
+def cmd_metrics(conn, args):
+    from screener.metrics import METRICS, calc_metrics
+    if args.list:
+        for name, desc in METRICS.items():
+            print(f'{name:25} {desc}')
+        return
+    print('metrics:', calc_metrics(conn, args.asof, args.tickers))
+
+
 def cmd_status(conn, args):
     if args.ticker:
         return _status_ticker(conn, args.ticker.upper())
@@ -101,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument('--years', type=int, default=5, help='history depth for new items/currencies (default 5)')
     s.add_argument('--max-age-days', type=float, default=7, help='refresh item info older than this (default 7)')
     s.set_defaults(func=cmd_update)
+
+    s = sub.add_parser('metrics', help='calculate metrics into item_metrics (after `update prices`)')
+    s.add_argument('--asof', help='YYYY-MM-DD (default: latest price date)')
+    s.add_argument('--tickers', nargs='+', help='only these tickers')
+    s.add_argument('--list', action='store_true', help='list metric definitions and exit')
+    s.set_defaults(func=cmd_metrics)
 
     s = sub.add_parser('status', help='data overview, or details of one ticker')
     s.add_argument('ticker', nargs='?')

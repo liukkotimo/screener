@@ -44,6 +44,29 @@ Options: `--tickers T1 T2` (items/prices only), `--years 5` (history depth for n
 - Prices and dividends are stored in the quote unit Yahoo uses (LSE in pence, `GBp`); `market_cap` is in the
   major currency (GBP). FX rates are stored as EUR per unit of the major currency.
 
+## Metrics
+
+```bash
+screener metrics                     # all active items, as of the latest price date
+screener metrics --asof 2026-06-30   # backfill another date (one row per item and as-of date)
+screener metrics --list              # definitions
+```
+
+Rules that apply to every metric:
+
+- Returns, drawdowns and risk use `adj_close` (dividends and splits included); performance is plain total
+  return, not annualized.
+- A window endpoint on a weekend/holiday uses the last price on or before it, at most 7 days older.
+  Otherwise the metric is NULL. The same holds when the item's last price is more than 7 days before as-of.
+- NULL always means "not computable" (short history, stale, missing FX or volume); it is never replaced by 0.
+  A dividend yield of 0 means a full year of prices and no dividends.
+- `volatility_1y` needs at least 200 daily returns, `cvar_95` at least 500 (about two years of the 3-year window).
+- `market_cap` is Yahoo's snapshot scaled by the close price change from the snapshot date to as-of, so
+  backdated runs do not use today's market cap. Funds/ETFs usually have no market cap; use `total_assets_eur`.
+- `dividend_yield` uses the plain close (adj_close would inflate it).
+
+The calculations live in `screener/analytics/` as plain functions on a pandas Series (no database code).
+
 ## Inspecting
 
 ```bash
