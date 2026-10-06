@@ -25,6 +25,8 @@ ATTRIBUTES = ('ticker', 'name', 'type', 'exchange', 'exchange_name', 'country', 
 
 COMPARISONS = {'<': '<', '<=': '<=', '>': '>', '>=': '>=', '==': '=', '!=': '!='}
 OPERATORS = (*COMPARISONS, 'between', 'in', 'not_in')
+# metrics holding an ISO date text; <, >= etc. take a date string for these
+DATE_METRICS = ('last_price_date', 'fiscal_year_end')
 
 
 class ProfileError(ValueError):
@@ -156,7 +158,7 @@ def _parse_condition(raw, where: str, metrics: set[str]):
             raise ProfileError(f'{where}: {op} needs a non-empty list, got {value!r}')
     elif not isinstance(value, (str, int, float)) or isinstance(value, bool):
         raise ProfileError(f'{where}: {op} needs a single number or text, got {value!r}')
-    if source == 'metric' and op in ('<', '<=', '>', '>=') and not _is_number(value) and field != 'last_price_date':
+    if source == 'metric' and op in ('<', '<=', '>', '>=') and not _is_number(value) and field not in DATE_METRICS:
         raise ProfileError(f'{where}: metric {field} {op} needs a number, got {value!r}')
     return Leaf(source, field, op, tuple(value) if isinstance(value, list) else value)
 

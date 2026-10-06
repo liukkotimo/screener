@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from screener import db
-from screener.update.fx import update_fx
+from screener.update.fundamentals import update_fundamentals
+from screener.update.fx import needed_currencies, update_fx
 from screener.update.items import update_items
 from screener.update.prices import update_prices
 from screener.update.universe import add_items, read_ticker_file
@@ -19,9 +20,10 @@ def history(dates, closes, adj=None, dividends=None):
 
 
 class FakeYahoo:
-    def __init__(self, histories=None, infos=None):
+    def __init__(self, histories=None, infos=None, financials=None):
         self.histories = histories or {}
         self.infos = infos or {}
+        self.financials = financials or {}
         self.calls = []
 
     def get_history_bulk(self, tickers, start, batch_size=50):
@@ -36,6 +38,12 @@ class FakeYahoo:
         if self.infos.get(ticker) == 'raise':
             raise RuntimeError('HTTP 401')
         return self.infos.get(ticker, {'trailingPegRatio': None})
+
+    def get_annual_financials(self, ticker):
+        self.calls.append(('financials', ticker))
+        if isinstance(self.financials.get(ticker), str):
+            raise RuntimeError('HTTP 429')
+        return self.financials.get(ticker, pd.DataFrame())
 
 
 @pytest.fixture
@@ -126,3 +134,41 @@ def test_update_fx_uses_major_currency_and_inverts_pair(conn):
     assert update_fx(conn, yahoo)['ok'] == 1
     rows = conn.execute('SELECT currency, eur_per_unit FROM fx_rate_daily').fetchall()
     assert {r[0] for r in rows} == {'GBP'} and rows[0][1] == pytest.approx(1.25)
+
+
+def statements(rows):
+    df = pd.DataFrame.from_dict(rows, orient='index', dtype=float)
+    df.index = pd.to_datetime(df.index)
+    return df
+
+
+def test_update_fundamentals_stores_keeps_old_years_and_logs(conn):
+    add_items(conn, [{'ticker': 'AAA', 'type': 'EQUITY'}, {'ticker': 'NONE', 'type': 'EQUITY'},
+                     {'ticker': 'ERR', 'type': 'EQUITY'}, {'ticker': 'FUND', 'type': 'ETF'}], 'test')
+    conn.execute("UPDATE item SET financial_currency = 'USD' WHERE ticker = 'AAA'")
+    yahoo = FakeYahoo(financials={'AAA': statements({'2024-12-31': {'revenue': 100.0},
+                                                     '2025-12-31': {'revenue': 110.0, 'ebit': 11.0}}),
+                                  'ERR': 'raise'})
+    stats = update_fundamentals(conn, yahoo)
+    assert stats == {'selected': 3, 'ok': 1, 'failed': 2, 'years': 2}                # the ETF is not fetched
+    rows = conn.execute('SELECT fiscal_year_end, currency, revenue, ebit FROM fundamental_annual ORDER BY 1').fetchall()
+    assert [tuple(r) for r in rows] == [('2024-12-31', 'USD', 100.0, None), ('2025-12-31', 'USD', 110.0, 11.0)]
+    errors = dict(conn.execute("SELECT key, last_error FROM fetch_log WHERE kind = 'fundamentals' "
+                               'AND last_error IS NOT NULL').fetchall())
+    assert errors['NONE'].startswith('no financial statements') and 'HTTP 429' in errors['ERR']
+
+    # Within max_age_days only the ticker that raised is retried (an empty answer counts as fetched).
+    yahoo.calls.clear()
+    update_fundamentals(conn, yahoo)
+    assert yahoo.calls == [('financials', 'ERR')]
+
+    # A later answer with fewer years replaces the returned year and keeps the older one.
+    yahoo.financials['AAA'] = statements({'2025-12-31': {'revenue': 111.0}})
+    update_fundamentals(conn, yahoo, tickers=['AAA'])
+    assert [r[0] for r in conn.execute('SELECT revenue FROM fundamental_annual ORDER BY fiscal_year_end')] == [100.0, 111.0]
+
+
+def test_needed_currencies_include_financial_currency(conn):
+    add_items(conn, [{'ticker': 'L', 'currency': 'GBp'}, {'ticker': 'E', 'currency': 'EUR'}], 'test')
+    conn.execute("UPDATE item SET financial_currency = CASE ticker WHEN 'L' THEN 'USD' ELSE 'EUR' END")
+    assert needed_currencies(conn) == ['GBP', 'USD']

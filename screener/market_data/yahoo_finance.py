@@ -22,6 +22,20 @@ MINOR_UNITS = {'GBp': ('GBP', 0.01), 'GBX': ('GBP', 0.01), 'ILA': ('ILS', 0.01),
 _HISTORY_COLUMNS = {'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Adj Close': 'adj_close',
                     'Volume': 'volume', 'Dividends': 'dividend', 'Stock Splits': 'split'}
 
+# Yahoo statement row -> our fundamental_annual column, per statement (yf.Ticker attribute)
+_STATEMENT_ROWS = {
+    'income_stmt': {'Total Revenue': 'revenue', 'EBIT': 'ebit', 'EBITDA': 'ebitda', 'Pretax Income': 'pretax_income',
+                    'Tax Provision': 'tax_provision', 'Interest Expense': 'interest_expense',
+                    'Net Income Common Stockholders': 'net_income', 'Diluted EPS': 'diluted_eps'},
+    'balance_sheet': {'Total Debt': 'total_debt', 'Cash Cash Equivalents And Short Term Investments':
+                      'cash_and_st_investments', 'Stockholders Equity': 'stockholders_equity'},
+    'cashflow': {'Operating Cash Flow': 'operating_cash_flow', 'Capital Expenditure': 'capital_expenditure',
+                 'Free Cash Flow': 'free_cash_flow', 'Cash Dividends Paid': 'dividends_paid'},
+}
+# Outflows Yahoo reports as negative (or with either sign); stored as positive amounts.
+_POSITIVE_COLUMNS = ('interest_expense', 'capital_expenditure', 'dividends_paid')
+FUNDAMENTAL_COLUMNS = tuple(c for rows in _STATEMENT_ROWS.values() for c in rows.values())
+
 
 def major_currency(currency: str | None) -> tuple[str | None, float]:
     """('GBp') -> ('GBP', 0.01); ('USD') -> ('USD', 1.0)."""
@@ -66,6 +80,31 @@ class YahooFinance:
         if s.index.tz is not None:
             s.index = s.index.tz_localize(None)
         return s
+
+    def get_annual_financials(self, ticker: str) -> pd.DataFrame:
+        """
+        Annual income statement, balance sheet and cash flow (3 Yahoo calls), in the financial currency.
+
+        Returns a DataFrame indexed by fiscal year end (ascending) with FUNDAMENTAL_COLUMNS; NaN where Yahoo
+        has no value. Years without any value are dropped (Yahoo's oldest column is often empty).
+        Empty DataFrame if Yahoo has no statements.
+        """
+        t = yf.Ticker(ticker)
+        parts = []
+        for attr, rows in _STATEMENT_ROWS.items():
+            self._throttle()
+            with quiet_yfinance():
+                df = getattr(t, attr)
+            if df is None or df.empty:
+                continue
+            parts.append(df.reindex(list(rows)).rename(index=rows).T)
+        if not parts:
+            return pd.DataFrame(columns=list(FUNDAMENTAL_COLUMNS))
+        out = pd.concat(parts, axis=1).reindex(columns=list(FUNDAMENTAL_COLUMNS)).astype(float)
+        out.index = pd.to_datetime(out.index)
+        for c in _POSITIVE_COLUMNS:
+            out[c] = out[c].abs()
+        return out.dropna(how='all').sort_index()
 
     def get_history_bulk(self, tickers: list[str], start: date, batch_size: int = 50) -> dict[str, pd.DataFrame]:
         """

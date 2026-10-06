@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener.analytics import fundamentals as fa
 from screener.analytics.dividends import trailing_yield
 from screener.analytics.returns import (days_since_low, drawdown_from_high, max_drawdown, performance,
                                         value_at, window)
@@ -95,3 +96,71 @@ def test_trailing_yield():
     assert trailing_yield(divs, close, asof) == pytest.approx(1.0 / 50)   # 2024-01-15 is outside
     assert trailing_yield(pd.Series(dtype=float, index=pd.DatetimeIndex([])), close, asof) == 0.0
     assert trailing_yield(divs, close.iloc[-100:], asof) is None           # history shorter than 12 m
+
+
+# --- fundamentals -------------------------------------------------------------------------------------------
+
+def annual(rows: dict) -> pd.DataFrame:
+    """{'2022-12-31': {'revenue': 100, ...}, ...} -> DataFrame indexed by fiscal year end."""
+    df = pd.DataFrame.from_dict(rows, orient='index', dtype=float)
+    df.index = pd.to_datetime(df.index)
+    return df.sort_index()
+
+
+YEAR = {'revenue': 1000.0, 'ebit': 100.0, 'ebitda': 150.0, 'pretax_income': 90.0, 'tax_provision': 18.0,
+        'interest_expense': 10.0, 'free_cash_flow': 60.0, 'dividends_paid': 30.0, 'total_debt': 300.0,
+        'cash_and_st_investments': 100.0, 'stockholders_equity': 600.0}
+
+
+def test_usable_years_respects_report_lag_and_staleness():
+    a = annual({'2024-12-31': YEAR, '2025-12-31': YEAR})
+    assert fa.usable_years(a, '2026-03-01').index[-1] == pd.Timestamp('2024-12-31')  # FY2025 not public yet
+    assert fa.usable_years(a, '2026-04-01').index[-1] == pd.Timestamp('2025-12-31')
+    assert fa.usable_years(a, '2027-07-15') is None                                  # latest > 18 months old
+    assert fa.usable_years(a, '2025-03-01') is None                                  # nothing public yet
+
+
+def test_single_year_ratios():
+    y = pd.Series(YEAR)
+    # tax 18/90 = 20 %; invested capital 600 + 300 - 100 = 800
+    assert fa.roic(y) == pytest.approx(100 * 0.8 / 800)
+    assert fa.ebit_margin(y) == pytest.approx(0.1)
+    assert fa.fcf_margin(y) == pytest.approx(0.06)
+    assert fa.net_debt_ebitda(y) == pytest.approx(200 / 150)
+    assert fa.interest_coverage(y) == pytest.approx(10.0)
+    assert fa.fcf_payout_ratio(y) == pytest.approx(0.5)
+
+
+def test_single_year_none_and_edge_cases():
+    y = pd.Series(YEAR)
+    assert fa.roic(pd.Series({**YEAR, 'stockholders_equity': -300.0})) is None    # invested capital <= 0
+    assert fa.roic(pd.Series({**YEAR, 'tax_provision': np.nan})) is None
+    assert fa.roic(pd.Series({**YEAR, 'pretax_income': -5.0})) == pytest.approx(100 / 800)  # no tax on a loss
+    assert fa.roic(pd.Series({**YEAR, 'tax_provision': 80.0})) == pytest.approx(100 * 0.6 / 800)  # rate capped
+    assert fa.ebit_margin(pd.Series({**YEAR, 'revenue': 0.0})) is None
+    assert fa.net_debt_ebitda(pd.Series({**YEAR, 'ebitda': -1.0})) is None
+    assert fa.interest_coverage(pd.Series({**YEAR, 'interest_expense': np.nan})) is None
+    assert fa.interest_coverage(pd.Series({**YEAR, 'interest_expense': 0.0})) == fa.NO_INTEREST_COVERAGE
+    assert fa.interest_coverage(pd.Series({**YEAR, 'interest_expense': 0.0, 'ebit': -5.0})) is None
+    assert fa.fcf_payout_ratio(pd.Series({**YEAR, 'free_cash_flow': -10.0})) is None
+    assert fa.fcf_payout_ratio(y.drop('dividends_paid')) is None
+
+
+def test_multi_year_metrics():
+    a = annual({'2022-12-31': {**YEAR, 'revenue': 800.0, 'ebit': 24.0},
+                '2023-12-31': {**YEAR, 'revenue': 900.0, 'ebit': 45.0},
+                '2024-12-31': {**YEAR, 'revenue': 950.0, 'ebit': 47.5},
+                '2025-12-31': {**YEAR, 'revenue': 1000.0, 'ebit': 80.0}})
+    assert fa.ebit_margin_change(a) == pytest.approx(0.08 - 0.05)
+    assert fa.revenue_cagr(a, 3) == pytest.approx((1000 / 800) ** (1 / 3) - 1)
+    rois = [fa.roic(r) for _, r in a.iterrows()]
+    assert fa.roic_avg(a, 4) == pytest.approx(sum(rois) / 4)
+    assert fa.roic_avg(a.iloc[1:], 4) is None                                         # only 3 years
+    assert fa.revenue_cagr(a.iloc[1:], 3) is None
+
+
+def test_revenue_cagr_needs_years_apart():
+    a = annual({'2021-12-31': YEAR, '2023-06-30': YEAR, '2024-12-31': YEAR, '2025-12-31': YEAR})
+    assert fa.revenue_cagr(a, 3) is None                                              # 48 months, not 36
+    a.loc[pd.Timestamp('2025-12-31'), 'revenue'] = np.nan
+    assert fa.ebit_margin_change(a) is None

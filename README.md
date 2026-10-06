@@ -29,12 +29,18 @@ Existing tickers are never overwritten by an import.
 ```bash
 screener update items     # name, type, exchange, country, currency, sector, market cap ... (Yahoo info)
 screener update prices    # daily OHLC, close, adj_close, volume + dividends, incremental
-screener update fx        # daily EUR rates for every currency used by active items
+screener update fundamentals  # annual income statement, balance sheet, cash flow (equities only)
+screener update fx        # daily EUR rates for every quote and reporting currency used by active items
 screener update all       # all of the above
 ```
 
-Options: `--tickers T1 T2` (items/prices only), `--years 5` (history depth for new items),
-`--max-age-days 7` (item info older than this is refreshed).
+Options: `--tickers T1 T2` (items/prices/fundamentals), `--years 5` (history depth for new items),
+`--max-age-days 7` (item info older than this is refreshed), `--fundamentals-max-age-days 30`.
+
+Fundamentals take three Yahoo calls per equity, so a first run over ~16 000 equities takes about 13 hours.
+Like the other updates it can be interrupted and resumed; items fetched within the max age are skipped.
+Statements are stored per fiscal year in the company's reporting currency (`financial_currency`, which may
+differ from the quote currency) and never deleted.
 
 - Updates are incremental and resumable: work is committed per ticker/batch; an interrupted run just
   continues next time.
@@ -64,6 +70,9 @@ Rules that apply to every metric:
 - `market_cap` is Yahoo's snapshot scaled by the close price change from the snapshot date to as-of, so
   backdated runs do not use today's market cap. Funds/ETFs usually have no market cap; use `total_assets_eur`.
 - `dividend_yield` uses the plain close (adj_close would inflate it).
+- Fundamental metrics use annual statements only; a fiscal year counts from 90 days after its end, and
+  statements older than ~18 months give NULL. Valuation ratios convert statement figures and price/market cap
+  to EUR. Details: [profiles.md](doc/profiles.md).
 
 The calculations live in `screener/analytics/` as plain functions on a pandas Series (no database code).
 

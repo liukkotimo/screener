@@ -29,15 +29,19 @@ def cmd_import_yahoo(conn, args):
 
 
 def cmd_update(conn, args):
+    from screener.update.fundamentals import update_fundamentals
     from screener.update.fx import update_fx
     from screener.update.items import update_items
     from screener.update.prices import update_prices
     yahoo = _yahoo()
-    what = ['items', 'prices', 'fx'] if args.what == 'all' else [args.what]
+    # fx last: it needs the financial currencies that items fetches
+    what = ['items', 'prices', 'fundamentals', 'fx'] if args.what == 'all' else [args.what]
     if 'items' in what:
         print('items:', update_items(conn, yahoo, args.tickers, args.max_age_days))
     if 'prices' in what:
         print('prices:', update_prices(conn, yahoo, args.tickers, args.years))
+    if 'fundamentals' in what:
+        print('fundamentals:', update_fundamentals(conn, yahoo, args.tickers, args.fundamentals_max_age_days))
     if 'fx' in what:
         print('fx:', update_fx(conn, yahoo, args.years))
 
@@ -100,6 +104,8 @@ def cmd_status(conn, args):
           f'{q("SELECT COUNT(DISTINCT item_id) FROM price_daily")} items, '
           f'latest {q("SELECT MAX(date) FROM price_daily")}')
     print(f'dividends:  {q("SELECT COUNT(*) FROM dividend")} rows')
+    print(f'statements: {q("SELECT COUNT(*) FROM fundamental_annual")} fiscal years, '
+          f'{q("SELECT COUNT(DISTINCT item_id) FROM fundamental_annual")} items')
     print(f'fx:         {q("SELECT COUNT(DISTINCT currency) FROM fx_rate_daily")} currencies, '
           f'latest {q("SELECT MAX(date) FROM fx_rate_daily")}')
     errors = conn.execute('SELECT kind, key, last_attempt_at, last_error FROM fetch_log '
@@ -121,9 +127,26 @@ def _status_ticker(conn, ticker):
     d = conn.execute('SELECT COUNT(*), MAX(ex_date) FROM dividend WHERE item_id = ?', (item['item_id'],)).fetchone()
     print(f'{"prices":20} {p[0]} rows, {p[1]} .. {p[2]}')
     print(f'{"dividends":20} {d[0]} rows, latest {d[1]}')
+    annual = conn.execute('SELECT * FROM fundamental_annual WHERE item_id = ? ORDER BY fiscal_year_end',
+                          (item['item_id'],)).fetchall()
+    if annual:
+        print(f'annual statements ({annual[0]["currency"]}):')
+        cols = [k for k in annual[0].keys() if k not in ('item_id', 'currency')]
+        for c in cols:
+            print(f'  {c:24}' + ''.join(f'{_fmt(r[c]):>12}' for r in annual))
     for f in conn.execute('SELECT * FROM fetch_log WHERE key = ? ORDER BY kind', (ticker,)):
         print(f'{"fetch " + f["kind"]:20} attempt {f["last_attempt_at"]}, success {f["last_success_at"]}'
               + (f', error: {f["last_error"]}' if f['last_error'] else ''))
+
+
+def _fmt(v) -> str:
+    """Compact number for tables: 1.23e9 -> '1.23G'; text and None unchanged."""
+    if not isinstance(v, (int, float)):
+        return str(v)
+    for div, suffix in ((1e9, 'G'), (1e6, 'M'), (1e3, 'k')):
+        if abs(v) >= div:
+            return f'{v / div:.2f}{suffix}'
+    return f'{v:.2f}'
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -144,10 +167,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_import_yahoo)
 
     s = sub.add_parser('update', help='fetch data from Yahoo')
-    s.add_argument('what', choices=['items', 'prices', 'fx', 'all'])
-    s.add_argument('--tickers', nargs='+', help='only these tickers (items/prices)')
+    s.add_argument('what', choices=['items', 'prices', 'fundamentals', 'fx', 'all'])
+    s.add_argument('--tickers', nargs='+', help='only these tickers (items/prices/fundamentals)')
     s.add_argument('--years', type=int, default=5, help='history depth for new items/currencies (default 5)')
     s.add_argument('--max-age-days', type=float, default=7, help='refresh item info older than this (default 7)')
+    s.add_argument('--fundamentals-max-age-days', type=float, default=30,
+                   help='refresh annual statements older than this (default 30)')
     s.set_defaults(func=cmd_update)
 
     s = sub.add_parser('metrics', help='calculate metrics into item_metrics (after `update prices`)')

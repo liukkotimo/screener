@@ -8,6 +8,7 @@ import sqlite3
 
 import pandas as pd
 
+from screener.analytics import fundamentals as fa
 from screener.analytics.dividends import trailing_yield
 from screener.analytics.returns import (days_since_low, drawdown_from_high, max_drawdown, performance,
                                         value_at, window)
@@ -36,20 +37,42 @@ METRICS = {
     'total_assets_eur': 'fund/ETF total assets (Yahoo, latest) in EUR at the as-of FX rate',
     'avg_value_traded_eur_3m': 'average daily close * volume over 3 months, in EUR (NULL if no volume data)',
     'dividend_yield': 'dividends (ex-date) over the last 12 months / close',
+    'roic': 'EBIT * (1 - tax rate) / (equity + net debt), latest fiscal year',
+    'roic_avg_4y': 'mean roic of the latest 4 fiscal years (all 4 required)',
+    'ebit_margin': 'EBIT / revenue, latest fiscal year',
+    'ebit_margin_change_1y': 'ebit_margin minus the previous year\'s (0.03 = +3 percentage points)',
+    'revenue_cagr_3y': 'annual revenue growth rate over 3 fiscal years',
+    'fcf_margin': 'free cash flow / revenue, latest fiscal year',
+    'net_debt_ebitda': '(total debt - cash and short-term investments) / EBITDA (NULL if EBITDA <= 0)',
+    'interest_coverage': 'EBIT / interest expense (999 = interest expense reported as 0)',
+    'pe_forward': 'price / Yahoo forward EPS (NULL if EPS <= 0 or the snapshot is > 31 days from as-of)',
+    'ev_ebit': '(market cap + net debt) / EBIT (NULL if EBIT <= 0)',
+    'fcf_yield': 'free cash flow / market cap',
+    'fcf_payout_ratio': 'dividends paid / free cash flow (NULL if FCF <= 0)',
+    'fiscal_year_end': 'end of the latest fiscal year used (public >= 90 days before as-of, at most ~18 months old)',
     'last_price_date': 'date of the last price on or before as-of',
     'n_obs': 'number of stored prices on or before as-of',
 }
 
 HISTORY_YEARS = 3  # longest metric window; prices older than this (plus a margin) are not loaded
+# metrics from annual statements (plus pe_forward), all NULL when there are no usable statements
+FUNDAMENTAL_METRICS = ('roic', 'roic_avg_4y', 'ebit_margin', 'ebit_margin_change_1y', 'revenue_cagr_3y', 'fcf_margin',
+                       'net_debt_ebitda', 'interest_coverage', 'pe_forward', 'ev_ebit', 'fcf_yield',
+                       'fcf_payout_ratio', 'fiscal_year_end')
+FORWARD_EPS_MAX_AGE_DAYS = 31  # forward_eps is a snapshot; not used for as-of dates further from it
 
 
 def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: pd.Series | None,
-                    asof) -> dict:
+                    asof, annual: pd.DataFrame | None = None, fx_fin: pd.Series | None = None) -> dict:
     """
     prices     DataFrame indexed by date with close, adj_close, volume (quote units, e.g. pence)
     dividends  Series indexed by ex-date (quote units)
-    item       dict with currency, market_cap, market_cap_date, total_assets
+    item       dict with currency, market_cap, market_cap_date, total_assets,
+               financial_currency, forward_eps, info_updated_at
     fx         EUR per unit of the item's major currency, indexed by date; None for EUR items
+    annual     annual statements (fundamental_annual columns) indexed by fiscal year end, in the financial
+               currency; None or empty if there are none
+    fx_fin     EUR per unit of the financial currency; None if EUR (or unknown)
     Returns {column: value} for item_metrics; None wherever a value cannot be computed.
     """
     asof = pd.Timestamp(asof)
@@ -99,7 +122,53 @@ def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: 
         if vol.sum() > 0:
             value_traded = float((w.reindex(vol.index) * vol).mean()) * unit_factor
     m['avg_value_traded_eur_3m'] = to_eur(value_traded)
+    m.update(fundamental_metrics(annual, item, fx_fin, asof, m['market_cap_eur'], m['price_eur']))
     return m
+
+
+def fundamental_metrics(annual: pd.DataFrame | None, item: dict, fx_fin: pd.Series | None, asof,
+                        market_cap_eur: float | None, price_eur: float | None) -> dict:
+    """
+    Statement-based metrics. Ratios within one statement need no FX; valuation compares statement figures
+    with market cap / price, so both sides are converted to EUR at the as-of rate.
+    """
+    fin, fin_factor = major_currency(item.get('financial_currency'))
+    eur_per_fin = None if fin is None else 1.0 if fin == 'EUR' else (
+        value_at(fx_fin, asof) if fx_fin is not None else None)
+
+    def fin_to_eur(v):
+        return None if v is None or eur_per_fin is None else v * fin_factor * eur_per_fin
+
+    def ratio(a, b):  # positive denominator required
+        return None if a is None or b is None or b <= 0 else a / b
+
+    m = {'pe_forward': None}
+    eps = item.get('forward_eps')
+    snapshot = item.get('info_updated_at')
+    if eps and snapshot and abs((pd.Timestamp(asof) - pd.Timestamp(snapshot[:10])).days) <= FORWARD_EPS_MAX_AGE_DAYS:
+        m['pe_forward'] = ratio(price_eur, fin_to_eur(eps))
+
+    years = fa.usable_years(annual, asof) if annual is not None and not annual.empty else None
+    if years is None:
+        return {**dict.fromkeys(FUNDAMENTAL_METRICS), **m}
+    last = years.iloc[-1]
+    nd = fa.net_debt(last)
+    ev = None if market_cap_eur is None or fin_to_eur(nd) is None else market_cap_eur + fin_to_eur(nd)
+    return {
+        **m,
+        'fiscal_year_end': last.name.strftime('%Y-%m-%d'),
+        'roic': fa.roic(last),
+        'roic_avg_4y': fa.roic_avg(years, 4),
+        'ebit_margin': fa.ebit_margin(last),
+        'ebit_margin_change_1y': fa.ebit_margin_change(years),
+        'revenue_cagr_3y': fa.revenue_cagr(years, 3),
+        'fcf_margin': fa.fcf_margin(last),
+        'net_debt_ebitda': fa.net_debt_ebitda(last),
+        'interest_coverage': fa.interest_coverage(last),
+        'ev_ebit': ratio(ev, fin_to_eur(fa.num(last.get('ebit')))),
+        'fcf_yield': ratio(fin_to_eur(fa.num(last.get('free_cash_flow'))), market_cap_eur),
+        'fcf_payout_ratio': fa.fcf_payout_ratio(last),
+    }
 
 
 def default_asof(conn: sqlite3.Connection) -> str | None:
@@ -119,7 +188,8 @@ def calc_metrics(conn: sqlite3.Connection, asof: str | None = None, tickers: lis
     oldest = (pd.Timestamp(asof) - pd.DateOffset(years=HISTORY_YEARS, days=30)).strftime('%Y-%m-%d')
     fx = load_fx(conn)
 
-    sql = 'SELECT item_id, ticker, currency, market_cap, market_cap_date, total_assets FROM item WHERE '
+    sql = ('SELECT item_id, ticker, currency, market_cap, market_cap_date, total_assets, financial_currency, '
+           'forward_eps, info_updated_at FROM item WHERE ')
     if tickers:
         items = conn.execute(sql + f'ticker IN ({",".join("?" * len(tickers))})', [t.upper() for t in tickers])
     else:
@@ -139,7 +209,11 @@ def calc_metrics(conn: sqlite3.Connection, asof: str | None = None, tickers: lis
         divs = pd.read_sql_query('SELECT ex_date, amount FROM dividend WHERE item_id = ? AND ex_date <= ?', conn,
                                  params=(item['item_id'], asof), parse_dates=['ex_date'],
                                  index_col='ex_date')['amount']
-        m = compute_metrics(prices, divs, item, fx.get(major_currency(item['currency'])[0]), asof)
+        annual = pd.read_sql_query('SELECT * FROM fundamental_annual WHERE item_id = ? AND fiscal_year_end <= ? '
+                                   'ORDER BY fiscal_year_end', conn, params=(item['item_id'], asof),
+                                   parse_dates=['fiscal_year_end'], index_col='fiscal_year_end')
+        m = compute_metrics(prices, divs, item, fx.get(major_currency(item['currency'])[0]), asof,
+                            annual, fx.get(major_currency(item['financial_currency'])[0]))
         # n_obs counts all history up to as-of, not only the loaded window
         m['n_obs'] = conn.execute('SELECT COUNT(*) FROM price_daily WHERE item_id = ? AND date <= ?',
                                   (item['item_id'], asof)).fetchone()[0]

@@ -21,6 +21,8 @@ INFO_FIELDS = {
     'market_cap': ('marketCap',),
     'total_assets': ('totalAssets',),
     'shares_outstanding': ('sharesOutstanding',),
+    'financial_currency': ('financialCurrency',),
+    'forward_eps': ('forwardEps',),
 }
 
 # Stop the run (it is resumable) when Yahoo fails this many tickers in a row: it is probably blocking us.
