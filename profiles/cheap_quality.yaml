@@ -1,0 +1,67 @@
+# Initial thresholds; calibrate against the survivor funnel.
+# Low valuation must be accompanied by at least 5 percent free cash flow yield.
+name: cheap_quality
+description: Profitable cash-generating companies with manageable debt and modest valuation.
+steps:
+- label: equities only
+  attr: type
+  op: ==
+  value: EQUITY
+- label: operating companies with comparable fundamentals
+  attr: sector
+  op: not_in
+  value:
+  - Financial Services
+  - Real Estate
+- label: at least EUR 1 billion market cap
+  metric: market_cap_eur
+  op: '>='
+  value: 1000000000
+- label: at least EUR 1 million daily turnover
+  metric: avg_value_traded_eur_3m
+  op: '>='
+  value: 1000000
+- label: good return on capital
+  metric: roic
+  op: '>='
+  value: 0.12
+- label: healthy operating margin
+  metric: ebit_margin
+  op: '>='
+  value: 0.1
+- label: healthy cash generation
+  metric: fcf_margin
+  op: '>='
+  value: 0.05
+- label: revenue not shrinking over three fiscal years
+  metric: revenue_cagr_3y
+  op: '>='
+  value: 0
+- label: manageable net debt
+  metric: net_debt_ebitda
+  op: <=
+  value: 2.5
+- label: net cash or sufficient interest coverage
+  any_of:
+  - metric: net_debt_ebitda
+    op: <=
+    value: 0
+  - metric: interest_coverage
+    op: '>='
+    value: 5
+- label: at least 5 percent free cash flow yield
+  metric: fcf_yield
+  op: '>='
+  value: 0.05
+- label: modest earnings valuation
+  any_of:
+  - metric: ev_ebit
+    op: between
+    value:
+    - 0
+    - 15
+  - metric: pe_forward
+    op: between
+    value:
+    - 0
+    - 18

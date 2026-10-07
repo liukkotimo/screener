@@ -1,0 +1,33 @@
+# Falling knives: sizeable, liquid equities that have fallen hard but have stopped falling recently.
+# A research worklist, not a buy list.
+name: falling_knives
+description: big drop from the 3-year high, recent stabilization
+steps:
+  - label: equities only
+    attr: type
+    op: in
+    value: [EQUITY]
+  - label: not too small
+    metric: market_cap_eur
+    op: ">="
+    value: 1000000000
+  - label: tradable
+    metric: avg_value_traded_eur_3m
+    op: ">="
+    value: 1000000
+  - label: deep fall from the 3-year high
+    metric: drawdown_3y
+    op: "<="
+    value: -0.40
+  - label: big loss over 1 or 3 years
+    any_of:
+      - {metric: perf_1y, op: "<=", value: -0.25}
+      - {metric: perf_3y, op: "<=", value: -0.40}
+  - label: no new low in the last month
+    metric: days_since_low_52w
+    op: ">="
+    value: 30
+  - label: last 3 months roughly flat
+    metric: perf_3m
+    op: between
+    value: [-0.10, 0.15]

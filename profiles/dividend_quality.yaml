@@ -1,0 +1,63 @@
+# Initial thresholds; calibrate against the survivor funnel.
+# Yield uses the last 12 months; payout uses annual statements. Dividend growth and cut history are unsupported.
+name: dividend_quality
+description: Meaningful dividends backed by free cash flow, profitability and manageable debt.
+steps:
+- label: equities only
+  attr: type
+  op: ==
+  value: EQUITY
+- label: operating companies with comparable fundamentals
+  attr: sector
+  op: not_in
+  value:
+  - Financial Services
+  - Real Estate
+- label: at least EUR 1 billion market cap
+  metric: market_cap_eur
+  op: '>='
+  value: 1000000000
+- label: at least EUR 1 million daily turnover
+  metric: avg_value_traded_eur_3m
+  op: '>='
+  value: 1000000
+- label: profitable use of invested capital
+  metric: roic
+  op: '>='
+  value: 0.1
+- label: healthy free cash flow generation
+  metric: fcf_margin
+  op: '>='
+  value: 0.05
+- label: manageable net debt
+  metric: net_debt_ebitda
+  op: <=
+  value: 2.5
+- label: net cash or sufficient interest coverage
+  any_of:
+  - metric: net_debt_ebitda
+    op: <=
+    value: 0
+  - metric: interest_coverage
+    op: '>='
+    value: 5
+- label: dividend yield between 2.5 and 8 percent
+  metric: dividend_yield
+  op: between
+  value:
+  - 0.025
+  - 0.08
+- label: annual dividends leave a free cash flow buffer
+  metric: fcf_payout_ratio
+  op: between
+  value:
+  - 0.05
+  - 0.75
+- label: revenue not shrinking over three fiscal years
+  metric: revenue_cagr_3y
+  op: '>='
+  value: 0
+- label: moderate price volatility
+  metric: volatility_1y
+  op: <=
+  value: 0.35
