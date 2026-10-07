@@ -25,6 +25,19 @@ screener import-yahoo --region fi --region se --min-market-cap 5e8   # equities 
 
 Existing tickers are never overwritten by an import.
 
+Yahoo screener regions are listing regions: `de` also returns the Frankfurt, Stuttgart, ... lines of foreign
+companies and `us` the OTC lines, so one company can appear many times. After importing (and once
+`screener metrics` has run, for turnover), keep one listing per company:
+
+```bash
+screener dedupe            # dry run: kept listing and the ones that would be dropped, per company
+screener dedupe --apply    # deactivate the others (active = 0, duplicate_of = the kept item)
+screener dedupe --reset    # reactivate everything deactivated as a duplicate
+```
+
+Listings are grouped by type and exact name. The home-exchange listing is kept (e.g. `SAP.DE` over `SAP`),
+otherwise the most liquid one. Re-run it after an import; nothing is deleted.
+
 ## Updating data
 
 ```bash

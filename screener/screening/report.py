@@ -79,7 +79,9 @@ def explain(conn: sqlite3.Connection, ticker: str, run: str | int = 'latest') ->
     r = find_run(conn, run)
     if r is None:
         return f'run {run} not found'
-    item = conn.execute('SELECT item_id, ticker, name, active FROM item WHERE ticker = ?', (ticker.upper(),)).fetchone()
+    item = conn.execute('SELECT i.item_id, i.ticker, i.name, i.active, d.ticker AS duplicate_of FROM item i '
+                        'LEFT JOIN item d ON d.item_id = i.duplicate_of WHERE i.ticker = ?',
+                        (ticker.upper(),)).fetchone()
     if item is None:
         return f'{ticker.upper()}: not in the database'
     lines = [_run_header(r), f'{item["ticker"]}  {item["name"] or ""}', '']
@@ -88,7 +90,8 @@ def explain(conn: sqlite3.Connection, ticker: str, run: str | int = 'latest') ->
         'LEFT JOIN screen_step_item si ON si.run_id = st.run_id AND si.step_no = st.step_no AND si.item_id = ? '
         'WHERE st.run_id = ? ORDER BY st.step_no', (item['item_id'], r['run_id'])).fetchall()
     if steps and steps[0]['passed'] is None:
-        why = 'inactive' if not item['active'] else 'probably added after the run'
+        why = ('probably added after the run' if item['active'] else
+               f'inactive, duplicate listing of {item["duplicate_of"]}' if item['duplicate_of'] else 'inactive')
         return '\n'.join(lines + [f'not a candidate in this run ({why})'])
     for s in steps:
         if s['passed'] is None:

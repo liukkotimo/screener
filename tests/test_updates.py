@@ -183,3 +183,34 @@ def test_update_fundamentals_limit_takes_largest_unfetched_first(conn):
     yahoo.calls.clear()
     update_fundamentals(conn, yahoo, limit=2)                    # the next run continues with the rest
     assert yahoo.calls == [('financials', 'SMALL'), ('financials', 'NOCAP')]
+
+
+def test_dedupe_keeps_home_listing_then_most_liquid(conn):
+    from screener.update.dedupe import deactivate_duplicates, find_duplicates, reset_duplicates
+    rows = [  # ticker, name, exchange, country, turnover
+        ('SAP.DE', 'SAP SE', 'GER', 'Germany', 4e8),
+        ('SAP', 'SAP SE', 'NYQ', 'Germany', 5e8),       # more liquid, but not the home exchange
+        ('SAP.F', 'SAP SE', 'FRA', 'Germany', 1e6),
+        ('36L.F', 'Foreign Co', 'FRA', 'China', 300.0),  # no home listing: most liquid wins
+        ('FCOY', 'Foreign Co', 'PNK', 'China', 5e4),
+        ('FCOX', 'Foreign Co', 'PNK', 'China', None),
+        ('SOLO', 'Only Once', 'NMS', 'United States', 1e6),
+    ]
+    add_items(conn, [{'ticker': t, 'name': n, 'type': 'EQUITY', 'exchange': e} for t, n, e, _, _ in rows], 'test')
+    for t, _, _, country, turnover in rows:
+        conn.execute('UPDATE item SET country = ? WHERE ticker = ?', (country, t))
+        conn.execute('INSERT INTO item_metrics (item_id, asof_date, avg_value_traded_eur_3m, calculated_at) '
+                     "VALUES (?, '2026-10-07', ?, 'x')", (item_id(conn, t), turnover))
+
+    groups = find_duplicates(conn)
+    assert [(k['ticker'], [o['ticker'] for o in others]) for k, others in groups] == [
+        ('FCOY', ['36L.F', 'FCOX']), ('SAP.DE', ['SAP', 'SAP.F'])]
+
+    assert deactivate_duplicates(conn, groups) == 4
+    active = {r[0] for r in conn.execute('SELECT ticker FROM item WHERE active = 1')}
+    assert active == {'SAP.DE', 'FCOY', 'SOLO'}
+    assert conn.execute("SELECT duplicate_of FROM item WHERE ticker = 'SAP'").fetchone()[0] == item_id(conn, 'SAP.DE')
+    assert find_duplicates(conn) == []
+
+    assert reset_duplicates(conn) == 4
+    assert conn.execute('SELECT COUNT(*) FROM item WHERE active = 1').fetchone()[0] == 7

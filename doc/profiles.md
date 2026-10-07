@@ -79,8 +79,8 @@ spelling exactly.
 | `source` | how the ticker entered the universe | `csv:test20`, `yahoo_screener:fi` |
 
 Tip: the same company is often listed on several exchanges (e.g. German regional exchanges `FRA`, `STU`,
-`MUN`, `DUS` plus OTC `PNK` in the US). Filter on `exchange` early to avoid duplicates and illiquid
-secondary listings. Funds/ETFs usually have no `sector`.
+`MUN`, `DUS` plus OTC `PNK` in the US). `screener dedupe --apply` keeps one listing per company (see README);
+otherwise filter on `exchange` early to avoid duplicates and illiquid secondary listings. Funds/ETFs usually have no `sector`.
 
 To check actual values in your database: `screener status TICKER` shows one item's attributes.
 
