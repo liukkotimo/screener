@@ -1,0 +1,55 @@
+# Initial thresholds; calibrate against the survivor funnel.
+# Requires four computable fiscal years of ROIC; no cheapness requirement.
+name: quality_compounder
+description: High returns on capital, sustained growth and cash generation with manageable debt.
+steps:
+- label: equities only
+  attr: type
+  op: ==
+  value: EQUITY
+- label: operating companies with comparable fundamentals
+  attr: sector
+  op: not_in
+  value:
+  - Financial Services
+  - Real Estate
+- label: at least EUR 1 billion market cap
+  metric: market_cap_eur
+  op: '>='
+  value: 1000000000
+- label: at least EUR 1 million daily turnover
+  metric: avg_value_traded_eur_3m
+  op: '>='
+  value: 1000000
+- label: strong current return on capital
+  metric: roic
+  op: '>='
+  value: 0.15
+- label: quality sustained over four fiscal years
+  metric: roic_avg_4y
+  op: '>='
+  value: 0.12
+- label: at least 8 percent annual revenue growth
+  metric: revenue_cagr_3y
+  op: '>='
+  value: 0.08
+- label: healthy operating margin
+  metric: ebit_margin
+  op: '>='
+  value: 0.12
+- label: profits convert into free cash flow
+  metric: fcf_margin
+  op: '>='
+  value: 0.08
+- label: manageable net debt
+  metric: net_debt_ebitda
+  op: <=
+  value: 2
+- label: net cash or sufficient interest coverage
+  any_of:
+  - metric: net_debt_ebitda
+    op: <=
+    value: 0
+  - metric: interest_coverage
+    op: '>='
+    value: 5

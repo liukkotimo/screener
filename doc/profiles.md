@@ -41,7 +41,7 @@ meaningful at step level.
 
 | op | value | notes |
 |---|---|---|
-| `<` `<=` `>` `>=` | number | metrics need a number (except `last_price_date`, which takes an ISO date string) |
+| `<` `<=` `>` `>=` | number | metrics need a number (except `last_price_date` and `fiscal_year_end`, which take an ISO date string) |
 | `==` `!=` | number or text | |
 | `between` | `[low, high]` | inclusive, numbers, `low <= high` |
 | `in` / `not_in` | non-empty list | |
@@ -150,12 +150,46 @@ Liquidity: ≥ 1e6 €/day (`1000000`) is comfortably tradable for a private inv
 Uses the plain close, not adj_close. A one-off special dividend inflates it; a cut dividend is not yet
 visible until the next ex-date.
 
+### Fundamentals (annual statements)
+
+From Yahoo's annual income statement, balance sheet and cash flow (`screener update fundamentals`), equities
+only. Rules:
+- Only **annual** figures (no trailing twelve months). The latest fiscal year used is the newest one that ended
+  at least 90 days before as-of (assumed published by then); it is shown in `fiscal_year_end`. If that year is
+  more than ~18 months old, all fundamental metrics are NULL.
+- Ratios within one statement need no currency conversion. Valuation metrics compare statement figures
+  (in Yahoo's `financialCurrency`, e.g. USD for Shell) with market cap / price in EUR at the as-of FX rate.
+- Values that make a ratio meaningless (EBIT or EBITDA ≤ 0, revenue ≤ 0, invested capital ≤ 0) give NULL.
+- Yahoo has about 4 fiscal years; stored years are kept, so history grows over time.
+
+| metric | definition | typical range |
+|---|---|---|
+| `roic` | EBIT × (1 − tax rate) / (equity + total debt − cash). Tax rate = tax / pretax income, limited to 0 … 0.4; 0 for a loss | 0.05 … 0.30 |
+| `roic_avg_4y` | mean `roic` of the latest 4 fiscal years; NULL unless all 4 are computable | |
+| `ebit_margin` | EBIT / revenue | 0.05 … 0.30 |
+| `ebit_margin_change_1y` | `ebit_margin` minus the previous year's (`0.03` = +3 percentage points) | −0.05 … 0.05 |
+| `revenue_cagr_3y` | annual revenue growth rate over 3 fiscal years | −0.1 … 0.3 |
+| `fcf_margin` | free cash flow / revenue | |
+| `net_debt_ebitda` | (total debt − cash and short-term investments) / EBITDA; negative = net cash | < 0 … 4 |
+| `interest_coverage` | EBIT / interest expense. **999** = interest expense reported as 0; NULL if not reported | 3 … 50 |
+| `pe_forward` | price / Yahoo's forward EPS (analyst estimate). NULL if EPS ≤ 0 or the as-of date is more than 31 days from the item info fetch (the estimate is a snapshot) | 8 … 40 |
+| `ev_ebit` | (market cap + net debt) / EBIT. Minority interests are ignored | 5 … 30 |
+| `fcf_yield` | free cash flow / market cap | 0 … 0.10 |
+| `fcf_payout_ratio` | dividends paid / free cash flow; NULL if FCF ≤ 0 or no dividend line reported | 0 … 1 |
+
+Tips: `pe_forward` is computed by us with both sides in EUR; Yahoo's own `forwardPE` mixes currencies when
+quote and reporting currency differ (e.g. GBp price / USD EPS). Many companies with little or no debt do not
+report interest expense, so `interest_coverage` is NULL for them: combine it with `net_debt_ebitda` in an
+`any_of`. Banks and insurers have no meaningful EBIT/EBITDA or net debt; exclude `Financial Services` when
+screening on these.
+
 ### Data quality
 
 | metric | definition |
 |---|---|
 | `last_price_date` | date of the last price on or before as-of (ISO text, e.g. `"2026-09-30"`) |
 | `n_obs` | number of stored daily prices up to as-of |
+| `fiscal_year_end` | end of the latest fiscal year used by the fundamental metrics (ISO text); NULL = no usable statements |
 
 `n_obs >= 750` is roughly "at least 3 years of history".
 

@@ -21,6 +21,8 @@ INFO_FIELDS = {
     'market_cap': ('marketCap',),
     'total_assets': ('totalAssets',),
     'shares_outstanding': ('sharesOutstanding',),
+    'financial_currency': ('financialCurrency',),
+    'forward_eps': ('forwardEps',),
 }
 
 # Stop the run (it is resumable) when Yahoo fails this many tickers in a row: it is probably blocking us.
@@ -35,7 +37,8 @@ def info_to_columns(info: dict) -> dict:
     return cols
 
 
-def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_days: float) -> list[sqlite3.Row]:
+def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_days: float,
+                 limit: int | None = None) -> list[sqlite3.Row]:
     """Active items whose info is missing or older than max_age_days (or exactly the given tickers)."""
     if tickers:
         marks = ','.join('?' * len(tickers))
@@ -45,13 +48,14 @@ def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_da
     return conn.execute(
         """SELECT item_id, ticker FROM item
            WHERE active = 1 AND (info_updated_at IS NULL OR info_updated_at < ?)
-           ORDER BY info_updated_at IS NOT NULL, info_updated_at, ticker""", (cutoff,)).fetchall()
+           ORDER BY info_updated_at IS NOT NULL, info_updated_at, market_cap DESC, ticker
+           LIMIT ?""", (cutoff, -1 if limit is None else limit)).fetchall()
 
 
 def update_items(conn: sqlite3.Connection, yahoo, tickers: list[str] | None = None,
-                 max_age_days: float = 7) -> dict:
+                 max_age_days: float = 7, limit: int | None = None) -> dict:
     """Fetch info for each selected item and store it. Failures are logged per ticker; the run continues."""
-    items = select_items(conn, tickers, max_age_days)
+    items = select_items(conn, tickers, max_age_days, limit)
     logger.info(f'update items: {len(items)} to fetch')
     ok = failed = consecutive = 0
     for n, item in enumerate(items, 1):

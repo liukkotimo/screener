@@ -14,8 +14,9 @@ OVERLAP_DAYS = 5
 
 
 def needed_currencies(conn: sqlite3.Connection) -> list[str]:
-    """Major currencies of active items, EUR excluded (GBp -> GBP)."""
-    rows = conn.execute('SELECT DISTINCT currency FROM item WHERE active = 1 AND currency IS NOT NULL').fetchall()
+    """Major quote and financial-statement currencies of active items, EUR excluded (GBp -> GBP)."""
+    rows = conn.execute('SELECT currency FROM item WHERE active = 1 AND currency IS NOT NULL UNION '
+                        'SELECT financial_currency FROM item WHERE active = 1 AND financial_currency IS NOT NULL')
     return sorted({major_currency(r[0])[0] for r in rows} - {'EUR'})
 
 

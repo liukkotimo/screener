@@ -1,6 +1,6 @@
 # Falling knives: sizeable, liquid equities that have fallen hard but have stopped falling recently.
 # A research worklist, not a buy list.
-name: falling_knives
+name: potential_turnaround
 description: big drop from the 3-year high, recent stabilization
 steps:
   - label: equities only

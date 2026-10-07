@@ -1,0 +1,52 @@
+# Initial thresholds; calibrate against the survivor funnel.
+# Uses absolute valuation thresholds; historical valuation comparisons are unsupported.
+name: overheated
+description: Strong recent gains near the 52-week high combined with elevated valuation.
+steps:
+- label: equities only
+  attr: type
+  op: ==
+  value: EQUITY
+- label: operating companies with comparable fundamentals
+  attr: sector
+  op: not_in
+  value:
+  - Financial Services
+  - Real Estate
+- label: at least EUR 1 billion market cap
+  metric: market_cap_eur
+  op: '>='
+  value: 1000000000
+- label: at least EUR 1 million daily turnover
+  metric: avg_value_traded_eur_3m
+  op: '>='
+  value: 1000000
+- label: large gain over six or twelve months
+  any_of:
+  - metric: perf_6m
+    op: '>='
+    value: 0.4
+  - metric: perf_1y
+    op: '>='
+    value: 0.7
+- label: recent momentum remains strong
+  metric: perf_3m
+  op: '>='
+  value: 0.1
+- label: within 8 percent of the 52-week high
+  metric: drawdown_52w
+  op: '>='
+  value: -0.08
+- label: elevated valuation on at least one measure
+  any_of:
+  - metric: pe_forward
+    op: '>='
+    value: 35
+  - metric: ev_ebit
+    op: '>='
+    value: 30
+  - metric: fcf_yield
+    op: between
+    value:
+    - 0
+    - 0.02
