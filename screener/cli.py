@@ -28,6 +28,23 @@ def cmd_import_yahoo(conn, args):
         print(f'{region}: {added} added, {present} already present')
 
 
+def cmd_dedupe(conn, args):
+    from screener.update.dedupe import deactivate_duplicates, find_duplicates, reset_duplicates
+    if args.reset:
+        print(f'{reset_duplicates(conn)} duplicate listing(s) reactivated')
+        return
+    groups = find_duplicates(conn)
+    for kept, others in groups:
+        print(f'{kept["ticker"]:12} {kept["exchange"] or "":4} {(kept["name"] or "")[:40]:40} '
+              f'drop {" ".join(o["ticker"] for o in others)}')
+    n = sum(len(others) for _, others in groups)
+    if args.apply:
+        print(f'{deactivate_duplicates(conn, groups)} listing(s) deactivated, {len(groups)} kept')
+    else:
+        print(f'{len(groups)} companies listed more than once; {n} listing(s) would be deactivated '
+              '(dry run, use --apply)')
+
+
 def cmd_update(conn, args):
     from screener.update.fundamentals import update_fundamentals
     from screener.update.fx import update_fx
@@ -166,6 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument('--region', action='append', required=True, help='Yahoo region code (fi, se, us, ...); repeatable')
     s.add_argument('--min-market-cap', type=float, default=5e8)
     s.set_defaults(func=cmd_import_yahoo)
+
+    s = sub.add_parser('dedupe', help='keep one listing per company, deactivate the others (dry run by default)')
+    g = s.add_mutually_exclusive_group()
+    g.add_argument('--apply', action='store_true', help='deactivate the duplicate listings')
+    g.add_argument('--reset', action='store_true', help='reactivate all listings deactivated as duplicates')
+    s.set_defaults(func=cmd_dedupe)
 
     s = sub.add_parser('update', help='fetch data from Yahoo')
     s.add_argument('what', choices=['items', 'prices', 'fundamentals', 'fx', 'all'])
