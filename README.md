@@ -8,8 +8,9 @@ eliminated and why.
 
 ```bash
 python3.13 -m venv venv            # 3.13 is just that I prefer it. Should work with 3.10++
-venv/bin/pip install -r requirements.txt
-venv/bin/pip install -e .          # provides the `screener` command (or use `python -m screener`)
+source venv/bin/activate           # For bash, select command for your environment
+pip install -r requirements.txt
+pip install -e .                   # provides the `screener` command (or use `python -m screener`)
 ```
 
 The database defaults to `data/screener.db` (override with `--db FILE` or `$SCREENER_DB`).
@@ -39,6 +40,8 @@ Options: `--tickers T1 T2` (items/prices/fundamentals), `--years 5` (history dep
 
 Fundamentals take three Yahoo calls per equity, so a first run over ~16 000 equities takes about 13 hours.
 Like the other updates it can be interrupted and resumed; items fetched within the max age are skipped.
+To spread it over several days, use `--limit N` (e.g. `screener update fundamentals --limit 2000`, once a
+day): each run takes the never-fetched items first, largest market cap first, then the oldest.
 Statements are stored per fiscal year in the company's reporting currency (`financial_currency`, which may
 differ from the quote currency) and never deleted.
 

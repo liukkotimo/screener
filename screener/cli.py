@@ -37,11 +37,12 @@ def cmd_update(conn, args):
     # fx last: it needs the financial currencies that items fetches
     what = ['items', 'prices', 'fundamentals', 'fx'] if args.what == 'all' else [args.what]
     if 'items' in what:
-        print('items:', update_items(conn, yahoo, args.tickers, args.max_age_days))
+        print('items:', update_items(conn, yahoo, args.tickers, args.max_age_days, args.limit))
     if 'prices' in what:
         print('prices:', update_prices(conn, yahoo, args.tickers, args.years))
     if 'fundamentals' in what:
-        print('fundamentals:', update_fundamentals(conn, yahoo, args.tickers, args.fundamentals_max_age_days))
+        print('fundamentals:', update_fundamentals(conn, yahoo, args.tickers, args.fundamentals_max_age_days,
+                                                          args.limit))
     if 'fx' in what:
         print('fx:', update_fx(conn, yahoo, args.years))
 
@@ -173,6 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument('--max-age-days', type=float, default=7, help='refresh item info older than this (default 7)')
     s.add_argument('--fundamentals-max-age-days', type=float, default=30,
                    help='refresh annual statements older than this (default 30)')
+    s.add_argument('--limit', type=int, help='items/fundamentals: fetch at most N items this run (never fetched first, '
+                                             'then the oldest; largest market cap first among equals)')
     s.set_defaults(func=cmd_update)
 
     s = sub.add_parser('metrics', help='calculate metrics into item_metrics (after `update prices`)')

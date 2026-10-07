@@ -172,3 +172,14 @@ def test_needed_currencies_include_financial_currency(conn):
     add_items(conn, [{'ticker': 'L', 'currency': 'GBp'}, {'ticker': 'E', 'currency': 'EUR'}], 'test')
     conn.execute("UPDATE item SET financial_currency = CASE ticker WHEN 'L' THEN 'USD' ELSE 'EUR' END")
     assert needed_currencies(conn) == ['GBP', 'USD']
+
+
+def test_update_fundamentals_limit_takes_largest_unfetched_first(conn):
+    add_items(conn, [{'ticker': t, 'type': 'EQUITY', 'market_cap': mc}
+                     for t, mc in (('SMALL', 1e8), ('BIG', 1e11), ('MID', 1e9), ('NOCAP', None))], 'test')
+    yahoo = FakeYahoo()
+    update_fundamentals(conn, yahoo, limit=2)
+    assert yahoo.calls == [('financials', 'BIG'), ('financials', 'MID')]
+    yahoo.calls.clear()
+    update_fundamentals(conn, yahoo, limit=2)                    # the next run continues with the rest
+    assert yahoo.calls == [('financials', 'SMALL'), ('financials', 'NOCAP')]

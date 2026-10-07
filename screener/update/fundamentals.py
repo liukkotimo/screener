@@ -12,7 +12,8 @@ from screener.update.items import MAX_CONSECUTIVE_FAILURES
 logger = logging.getLogger(__name__)
 
 
-def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_days: float) -> list[sqlite3.Row]:
+def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_days: float,
+                 limit: int | None = None) -> list[sqlite3.Row]:
     """Active equities whose statements are missing or older than max_age_days (or exactly the given tickers)."""
     if tickers:
         marks = ','.join('?' * len(tickers))
@@ -22,7 +23,8 @@ def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_da
     return conn.execute(
         """SELECT item_id, ticker, financial_currency FROM item
            WHERE active = 1 AND type = 'EQUITY' AND (fundamentals_updated_at IS NULL OR fundamentals_updated_at < ?)
-           ORDER BY fundamentals_updated_at IS NOT NULL, fundamentals_updated_at, ticker""", (cutoff,)).fetchall()
+           ORDER BY fundamentals_updated_at IS NOT NULL, fundamentals_updated_at, market_cap DESC, ticker
+           LIMIT ?""", (cutoff, -1 if limit is None else limit)).fetchall()
 
 
 def store_annual(conn: sqlite3.Connection, item_id: int, currency: str | None, annual: pd.DataFrame) -> int:
@@ -37,9 +39,9 @@ def store_annual(conn: sqlite3.Connection, item_id: int, currency: str | None, a
 
 
 def update_fundamentals(conn: sqlite3.Connection, yahoo, tickers: list[str] | None = None,
-                        max_age_days: float = 30) -> dict:
+                        max_age_days: float = 30, limit: int | None = None) -> dict:
     """Fetch annual statements for each selected item. Failures are logged per ticker; the run continues."""
-    items = select_items(conn, tickers, max_age_days)
+    items = select_items(conn, tickers, max_age_days, limit)
     logger.info(f'update fundamentals: {len(items)} to fetch')
     ok = failed = consecutive = years = 0
     for n, item in enumerate(items, 1):
