@@ -2,6 +2,7 @@
 # Requires four computable fiscal years of ROIC; no cheapness requirement.
 name: quality_compounder
 description: High returns on capital, sustained growth and cash generation with manageable debt.
+show: [exchange]
 steps:
 - label: equities only
   attr: type

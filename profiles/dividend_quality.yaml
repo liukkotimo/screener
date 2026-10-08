@@ -2,6 +2,7 @@
 # Yield uses the last 12 months; payout uses annual statements. Dividend growth and cut history are unsupported.
 name: dividend_quality
 description: Meaningful dividends backed by free cash flow, profitability and manageable debt.
+show: [exchange]
 steps:
 - label: equities only
   attr: type

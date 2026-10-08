@@ -1,12 +1,15 @@
 """Profile validation, step evaluation (incl. NULL handling), re-runs, explain and prune."""
 import json
+import sys
+import types
 
 import pytest
 
 from screener import db
 from screener.screening.engine import metric_columns, prune_runs, run_screen
 from screener.screening.profile import ProfileError, parse_profile
-from screener.screening.report import explain
+from screener.screening.report import explain, survivor_table, survivors
+from screener.sheet import export_run, run_rows
 
 ASOF = '2026-03-31'
 
@@ -159,3 +162,167 @@ def test_prune_keeps_newest_per_profile(conn):
     assert prune_runs(conn, keep=1) == 2
     assert [r[0] for r in conn.execute('SELECT run_id FROM screen_run')] == [ids[-1]]
     assert conn.execute('SELECT COUNT(DISTINCT run_id) FROM screen_step_item').fetchone()[0] == 1
+
+
+# --- show: columns and survivors table -------------------------------------------------------------------------
+
+SHOW = EXAMPLE.replace('steps:', 'show: [exchange, perf_1y, ticker, perf_1y, dividend_yield]\nsteps:')
+
+
+def test_show_validation(conn):
+    assert profile(conn, SHOW).show == ('exchange', 'perf_1y', 'ticker', 'dividend_yield')   # deduplicated
+    assert profile(conn, EXAMPLE).show == ()
+    for bad, message in (('[nonsense]', "unknown attribute or metric 'nonsense'"), ('exchange', 'expected a list'),
+                         ('[{metric: perf_1y}]', 'unknown attribute or metric')):
+        with pytest.raises(ProfileError, match=message):
+            profile(conn, EXAMPLE.replace('steps:', f'show: {bad}\nsteps:'))
+
+
+def test_survivor_table_puts_show_columns_first(conn):
+    plain = survivor_table(conn, run_screen(conn, profile(conn, EXAMPLE)))
+    assert plain[0] == ['ticker', 'name', 'exchange', 'market_cap_eur', 'perf_3m', 'perf_1y', 'perf_3y']
+    assert plain[1] == [['AAA', '', 'HEL', 2e9, 0.01, -0.5, None]]
+
+    headers, rows = survivor_table(conn, run_screen(conn, profile(conn, SHOW)))
+    # show columns (without ticker/name, deduplicated), then the remaining tested fields; no repeated columns
+    assert headers == ['ticker', 'name', 'exchange', 'perf_1y', 'dividend_yield', 'market_cap_eur', 'perf_3m', 'perf_3y']
+    assert rows == [['AAA', '', 'HEL', -0.5, None, 2e9, 0.01, None]]
+
+
+def test_survivors_text_uses_show_columns(conn):
+    text = survivors(conn, run_screen(conn, profile(conn, SHOW)))
+    assert text.startswith('1 survivors:') and 'dividend_yield' in text
+
+
+def test_survivor_table_without_survivors(conn):
+    p = profile(conn, 'name: none\nshow: [exchange]\nsteps:\n  - {metric: perf_1y, op: "<", value: -5}\n')
+    assert survivor_table(conn, run_screen(conn, p)) == (['ticker', 'name', 'exchange'], [])
+    assert survivors(conn, 1) == 'no survivors'
+
+
+# --- Google Sheet export ---------------------------------------------------------------------------------------
+
+def test_run_rows_layout(conn):
+    run_id = run_screen(conn, profile(conn, SHOW))
+    rows, header_rows = run_rows(conn, run_id)
+    assert rows[0][0].startswith(f'run {run_id}  example  as of {ASOF}')
+    assert rows[1] == []
+    assert header_rows == [3, 10]
+    assert rows[2] == ['step', 'in', 'out', 'condition']
+    assert rows[3] == [1, 6, 4, "exchange in [HEL, STO, NYQ]"]
+    assert rows[4][:3] == [2, 4, 3]
+    assert rows[6] == [4, 2, 1, '(perf_1y < -0.33 OR perf_3y < -0.33)']
+    assert rows[7:9] == [[], ['1 survivors']]
+    assert rows[9][:4] == ['ticker', 'name', 'exchange', 'perf_1y']
+    assert rows[10][:4] == ['AAA', '', 'HEL', -0.5]
+    assert rows[10][4] == ''                      # NULL becomes an empty cell, never 0
+
+
+class FakeSheets:
+    """Stands in for the gspread module: records what would be written."""
+    def __init__(self, existing=()):
+        self.tabs = {name: [] for name in existing}   # tab name -> log of calls
+        outer = self
+
+        class GSpreadException(Exception):
+            pass
+
+        class WorksheetNotFound(GSpreadException):
+            pass
+
+        class SpreadsheetNotFound(GSpreadException):
+            pass
+
+        class Worksheet:
+            def __init__(self, name):
+                self.name = name
+
+            def clear(self):
+                outer.tabs[self.name].append('clear')
+
+            def resize(self, rows, cols):
+                outer.tabs[self.name].append(('resize', rows, cols))
+
+            def update(self, values, range_name, value_input_option):
+                outer.tabs[self.name].append(('update', values, range_name, value_input_option))
+
+            def format(self, rng, fmt):
+                outer.tabs[self.name].append(('format', rng, fmt))
+
+        class Spreadsheet:
+            def worksheet(self, name):
+                if name not in outer.tabs:
+                    raise WorksheetNotFound(name)
+                return Worksheet(name)
+
+            def add_worksheet(self, name, rows, cols):
+                outer.tabs[name] = [('add', rows, cols)]
+                return Worksheet(name)
+
+        class Client:
+            def open_by_key(self, key):
+                outer.opened = key
+                return Spreadsheet()
+
+            def open_by_url(self, url):
+                outer.opened = url
+                return Spreadsheet()
+
+        self.module = types.ModuleType('gspread')
+        self.module.WorksheetNotFound = WorksheetNotFound
+        self.module.SpreadsheetNotFound = SpreadsheetNotFound
+        self.module.exceptions = types.SimpleNamespace(GSpreadException=GSpreadException)
+        self.module.service_account = lambda **kw: (setattr(outer, 'auth', kw), Client())[1]
+        self.utils = types.ModuleType('gspread.utils')
+        self.utils.rowcol_to_a1 = lambda r, c: f'{"ABCDEFGHIJ"[c - 1]}{r}'
+        self.module.utils = self.utils
+
+    def install(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, 'gspread', self.module)
+        monkeypatch.setitem(sys.modules, 'gspread.utils', self.utils)
+
+
+def test_export_run_creates_and_overwrites_tab(conn, monkeypatch):
+    run_id = run_screen(conn, profile(conn, SHOW))
+    fake = FakeSheets()
+    fake.install(monkeypatch)
+    assert export_run(conn, run_id, 'SHEETID', credentials='key.json') == f'example run {run_id}'
+    assert fake.opened == 'SHEETID' and fake.auth['filename'] == 'key.json'
+    log = fake.tabs[f'example run {run_id}']
+    rows, _ = run_rows(conn, run_id)
+    assert log[0] == ('add', len(rows), 8)
+    assert log[1] == ('update', rows, 'A1', 'RAW')
+    assert [c[1] for c in log if c[0] == 'format'] == ['A3:H3', 'A10:H10']
+
+    export_run(conn, run_id, 'https://docs.google.com/spreadsheets/d/x/edit', tab='mine')   # new tab, URL accepted
+    assert fake.opened.startswith('https://')
+    again = FakeSheets(existing=['mine'])
+    again.install(monkeypatch)
+    export_run(conn, run_id, 'SHEETID', tab='mine')
+    assert again.tabs['mine'][:2] == ['clear', ('resize', len(rows), 8)]   # existing tab is cleared, then rewritten
+
+
+def test_export_run_errors(conn, monkeypatch):
+    run_id = run_screen(conn, profile(conn, EXAMPLE))
+    monkeypatch.setitem(sys.modules, 'gspread', None)           # import fails
+    with pytest.raises(ValueError, match='pip install gspread'):
+        export_run(conn, run_id, 'SHEETID')
+    fake = FakeSheets()
+    fake.install(monkeypatch)
+    fake.module.service_account = lambda **kw: (_ for _ in ()).throw(FileNotFoundError(2, 'no', 'key.json'))
+    with pytest.raises(ValueError, match='credentials file not found: key.json'):
+        export_run(conn, run_id, 'SHEETID', credentials='key.json')
+
+
+def test_load_dotenv(tmp_path, monkeypatch):
+    from screener.cli import load_dotenv
+    env = tmp_path / '.env'
+    env.write_text('# comment\nSCREENER_SHEET="abc"\nexport SCREENER_DB=x.db\n\nSCREENER_TEST_KEEP=new\n')
+    monkeypatch.delenv('SCREENER_SHEET', raising=False)
+    monkeypatch.delenv('SCREENER_DB', raising=False)
+    monkeypatch.setenv('SCREENER_TEST_KEEP', 'old')
+    load_dotenv(env)
+    import os
+    assert os.environ['SCREENER_SHEET'] == 'abc'
+    assert os.environ['SCREENER_DB'] == 'x.db'
+    assert os.environ['SCREENER_TEST_KEEP'] == 'old'

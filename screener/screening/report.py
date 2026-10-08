@@ -2,8 +2,8 @@
 import json
 import sqlite3
 
-from screener.screening.engine import find_run
-from screener.screening.profile import format_value
+from screener.screening.engine import find_run, metric_columns
+from screener.screening.profile import ProfileError, format_value, is_attribute, parse_profile
 
 
 def _run_header(run) -> str:
@@ -33,17 +33,49 @@ def _merged_values(conn, run_id, item_ids) -> dict[int, dict]:
     return values
 
 
-def survivors(conn: sqlite3.Connection, run_id: int) -> str:
+def _show_fields(conn: sqlite3.Connection, run) -> list[str]:
+    """The profile's `show:` columns, read from the profile text stored with the run (none for old runs)."""
+    try:
+        show = parse_profile(run['profile_yaml'], metric_columns(conn)).show
+    except ProfileError:
+        return []
+    return [f for f in show if f not in ('ticker', 'name')]
+
+
+def survivor_table(conn: sqlite3.Connection, run_id: int, name_width: int | None = None):
+    """
+    Survivors of the last step as (headers, rows): ticker, name, the profile's `show:` columns, then every
+    other field tested in any step. `show:` values are current item attributes / metrics of the run's as-of
+    date; tested values are the ones stored when the run was made.
+    """
+    run = conn.execute('SELECT * FROM screen_run WHERE run_id = ?', (run_id,)).fetchone()
     last = conn.execute('SELECT MAX(step_no) FROM screen_step WHERE run_id = ?', (run_id,)).fetchone()[0]
     items = conn.execute(
         'SELECT i.item_id, i.ticker, i.name FROM screen_step_item s JOIN item i USING (item_id) '
         'WHERE s.run_id = ? AND s.step_no = ? AND s.passed = 1 ORDER BY i.ticker', (run_id, last)).fetchall()
-    if not items:
+    tested = _merged_values(conn, run_id, [i['item_id'] for i in items])
+    show = _show_fields(conn, run)
+    tested_fields = [f for f in dict.fromkeys(f for v in tested.values() for f in v)
+                     if f not in show and f not in ('ticker', 'name')]
+    shown = {}
+    if show and items:
+        cols = ', '.join(f'{"i" if is_attribute(f) else "m"}.{f}' for f in show)   # whitelisted names only
+        for r in conn.execute(
+                f'SELECT i.item_id, {cols} FROM item i '
+                f'LEFT JOIN item_metrics m ON m.item_id = i.item_id AND m.asof_date = ? '
+                f'WHERE i.item_id IN (SELECT item_id FROM screen_step_item '
+                f'WHERE run_id = ? AND step_no = ? AND passed = 1)', (run['asof_date'], run_id, last)):
+            shown[r['item_id']] = list(r)[1:]
+    rows = [[i['ticker'], (i['name'] or '')[:name_width], *shown.get(i['item_id'], [None] * len(show)),
+             *[tested[i['item_id']].get(f) for f in tested_fields]] for i in items]
+    return ['ticker', 'name', *show, *tested_fields], rows
+
+
+def survivors(conn: sqlite3.Connection, run_id: int) -> str:
+    headers, rows = survivor_table(conn, run_id, name_width=30)
+    if not rows:
         return 'no survivors'
-    values = _merged_values(conn, run_id, [i['item_id'] for i in items])
-    fields = list(dict.fromkeys(f for v in values.values() for f in v))
-    rows = [[i['ticker'], (i['name'] or '')[:30], *[values[i['item_id']].get(f) for f in fields]] for i in items]
-    return f'{len(items)} survivors:\n' + _table(rows, ['ticker', 'name', *fields])
+    return f'{len(rows)} survivors:\n' + _table(rows, headers)
 
 
 def eliminated(conn: sqlite3.Connection, run_id: int, step_no: int) -> str:

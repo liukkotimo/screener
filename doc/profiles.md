@@ -18,6 +18,7 @@ Parsing and validation: `screener/screening/profile.py`. Metric definitions: `sc
 ```yaml
 name: my_profile                # required; runs are grouped by this name
 description: one-line summary   # optional
+show: [sector, perf_1y, pe_forward]   # optional; extra columns for the survivors list (see below)
 steps:                          # required, non-empty list
   - {attr: type, op: ==, value: EQUITY}
   - label: shown in output      # optional on any step
@@ -32,6 +33,11 @@ steps:                          # required, non-empty list
 
 No other top-level or step keys are allowed; unknown keys, attributes, metrics or operators are rejected
 with an error listing the valid choices.
+
+`show` is an optional list of attribute or metric names (anything valid after `attr:` / `metric:`). The
+survivors list (`screen`, `show-run`, Google Sheet) then has these columns right after `ticker` and `name`,
+followed by every other field that any step tested, so nothing a step looked at is hidden. Values are the
+item's current attributes and the metrics of the run's as-of date. It does not filter anything.
 
 A step is either a **condition** (exactly one of `attr` / `metric`, plus `op` and `value`) or a **group**
 (exactly one of `any_of` / `all_of` with a non-empty list of conditions or groups). `label` is only

@@ -8,6 +8,10 @@ from screener.db import now_utc
 
 logger = logging.getLogger(__name__)
 
+# Yahoo exchange codes of the US over-the-counter markets (OTC Pink, OTCQX, OTCQB). Not imported: the same
+# companies are listed on their home exchange, and OTC lines only slow down the updates.
+EXCLUDED_EXCHANGES = {'PNK', 'OQX', 'OQB'}
+
 
 def read_ticker_file(path: str | Path) -> list[str]:
     """
@@ -63,5 +67,6 @@ def import_yahoo_screener(conn: sqlite3.Connection, yahoo, region: str, min_mark
         'currency': q.get('currency'),
         'market_cap': q.get('marketCap'),
         'market_cap_date': today if q.get('marketCap') else None,
-    } for q in quotes if q.get('symbol')]
+    } for q in quotes if q.get('symbol') and q.get('exchange') not in EXCLUDED_EXCHANGES]
+    logger.info(f'{region}: skipped {len(quotes) - len(rows)} quotes (OTC or no symbol)')
     return add_items(conn, rows, f'yahoo_screener:{region}')

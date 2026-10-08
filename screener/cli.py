@@ -9,6 +9,19 @@ from screener import db
 logger = logging.getLogger('screener')
 
 
+def load_dotenv(path='.env'):
+    """Set KEY=VALUE lines from a .env file in the current directory; real environment variables win."""
+    if not os.path.isfile(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.removeprefix('export ').split('=', 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+
+
 def _yahoo():
     from screener.market_data.yahoo_finance import YahooFinance
     return YahooFinance()
@@ -90,6 +103,28 @@ def cmd_screen(conn, args):
     print(funnel(conn, run_id), end='\n\n')
     print(survivors(conn, run_id))
     print(f'\nwhy was X eliminated?  screener explain <ticker> --run {run_id}')
+    if args.to_sheet:
+        _export_sheet(conn, run_id, args)
+
+
+def _export_sheet(conn, run_id, args):
+    from screener.sheet import export_run
+    sheet = args.sheet or os.environ.get('SCREENER_SHEET')
+    if not sheet:
+        sys.exit('error: no spreadsheet given: use --sheet ID_OR_URL or set $SCREENER_SHEET')
+    try:
+        tab = export_run(conn, run_id, sheet, args.tab, args.credentials or os.environ.get('SCREENER_GOOGLE_CREDENTIALS'))
+    except ValueError as e:
+        sys.exit(f'error: {e}')
+    print(f'run {run_id} written to the Google Sheet, tab "{tab}"')
+
+
+def cmd_export_sheet(conn, args):
+    from screener.screening.engine import find_run
+    run = find_run(conn, args.run)
+    if run is None:
+        sys.exit(f'error: run {args.run} not found')
+    _export_sheet(conn, run['run_id'], args)
 
 
 def cmd_explain(conn, args):
@@ -167,6 +202,13 @@ def _fmt(v) -> str:
     return f'{v:.2f}'
 
 
+def _add_sheet_args(s):
+    s.add_argument('--sheet', help='Google Sheet id or URL (default: $SCREENER_SHEET)')
+    s.add_argument('--tab', help='worksheet name (default: "<profile> run <id>"; overwritten if it exists)')
+    s.add_argument('--credentials', help='service account JSON file (default: $SCREENER_GOOGLE_CREDENTIALS, '
+                                         'else ~/.config/gspread/service_account.json)')
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog='screener', description=__doc__)
     p.add_argument('--db', default=os.environ.get('SCREENER_DB', str(db.DEFAULT_DB)),
@@ -212,6 +254,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument('--asof', help='metrics as-of date (default: latest calculated)')
     s.add_argument('--from-step', type=int, default=1, help='re-use stored results of earlier steps')
     s.add_argument('--base-run', help='run to re-use steps from (default: latest run of this profile)')
+    s.add_argument('--to-sheet', action='store_true', help='also write the run to a Google Sheet (see export-sheet)')
+    _add_sheet_args(s)
     s.set_defaults(func=cmd_screen)
 
     s = sub.add_parser('explain', help='show at which step and why an item was eliminated')
@@ -228,6 +272,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument('--step', type=int, help='list items eliminated at this step, with reasons')
     s.set_defaults(func=cmd_show_run)
 
+    s = sub.add_parser('export-sheet', help='write a run (step summary + survivors) to a tab of a Google Sheet')
+    s.add_argument('run', nargs='?', default='latest', help='run id or "latest" (default)')
+    _add_sheet_args(s)
+    s.set_defaults(func=cmd_export_sheet)
+
     s = sub.add_parser('prune', help='delete old screening runs')
     g = s.add_mutually_exclusive_group()
     g.add_argument('--keep', type=int, default=10, help='keep the newest N runs per profile (default 10)')
@@ -241,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
+    load_dotenv()
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format='%(asctime)s %(levelname)-7s %(name)s: %(message)s', datefmt='%H:%M:%S')

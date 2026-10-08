@@ -2,6 +2,7 @@
 # Uses absolute valuation thresholds; historical valuation comparisons are unsupported.
 name: overheated
 description: Strong recent gains near the 52-week high combined with elevated valuation.
+show: [exchange]
 steps:
 - label: equities only
   attr: type
