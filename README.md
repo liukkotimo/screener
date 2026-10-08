@@ -108,12 +108,36 @@ screener explain NOVO-B.CO --run 12
 screener runs                            # list runs
 screener show-run 12                     # funnel and survivors
 screener show-run 12 --step 4            # everything eliminated at step 4, with reasons
+screener export-sheet 12                 # run to a Google Sheet tab, see below
 screener prune --keep 10                 # keep the newest 10 runs per profile (or --run ID)
 ```
 
 Every candidate of every step is stored in `screen_step_item` with its tested values, pass/fail and reason.
 `--from-step N` copies steps 1..N-1 from the latest run of the same profile (or `--base-run ID`); it refuses
 if any of those steps changed or the as-of date differs.
+
+## Google Sheets export
+
+One run goes to one worksheet tab: a step summary on top (`step`, `in`, `out`, `condition`), then the survivors
+with the profile's `show:` columns first and every field the steps tested after them.
+
+```bash
+pip install -e .[sheets]                       # installs gspread (optional dependency)
+screener screen --profile profiles/falling_knives.yaml --to-sheet
+screener export-sheet                          # latest run;  or: screener export-sheet 12
+```
+
+The tab is named `<profile> run <id>` (`--tab NAME` to change it); exporting the same tab again overwrites it.
+One-time setup (service account, no browser login needed afterwards):
+
+1. In Google Cloud Console create a project, enable the *Google Sheets API*, create a *service account* and
+   download its JSON key (keep it outside the repo).
+2. Share your spreadsheet with the service account's e-mail address (`client_email` in the key file) as Editor.
+3. Tell screener where things are, either with options or environment variables:
+   `--sheet ID_OR_URL` / `$SCREENER_SHEET` and `--credentials FILE` / `$SCREENER_GOOGLE_CREDENTIALS`
+   (default key file: `~/.config/gspread/service_account.json`). Environment variables can also go in a
+   `.env` file (`KEY=value` lines) in the directory you run screener from; variables already set in the
+   shell take precedence.
 
 ## Inspecting
 

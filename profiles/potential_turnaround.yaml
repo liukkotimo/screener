@@ -2,6 +2,7 @@
 # A research worklist, not a buy list.
 name: potential_turnaround
 description: big drop from the 3-year high, recent stabilization
+show: [exchange]
 steps:
   - label: equities only
     attr: type

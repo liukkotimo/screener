@@ -10,6 +10,7 @@ Screening profiles: YAML -> validated conditions.
         any_of:
           - {metric: perf_1y, op: "<", value: -0.33}
           - {metric: perf_3y, op: "<", value: -0.33}
+    show: [sector, perf_1y, dividend_yield]      # optional: extra columns for the survivors
 
 Column names are checked against whitelists before any SQL is built; values only ever become SQL parameters.
 """
@@ -103,6 +104,7 @@ class Profile:
     yaml_text: str
     path: str | None = None
     description: str | None = None
+    show: tuple = ()   # extra survivor columns: attribute or metric names
 
 
 def format_value(v) -> str:
@@ -117,6 +119,11 @@ def format_value(v) -> str:
     if isinstance(v, int):
         return f'{v:,}' if abs(v) >= 1e6 else str(v)
     return str(v)
+
+
+def is_attribute(field: str) -> bool:
+    """True for an item column (ATTRIBUTES), False for a metric. Attribute and metric names never overlap."""
+    return field in ATTRIBUTES
 
 
 def _is_number(v):
@@ -163,6 +170,19 @@ def _parse_condition(raw, where: str, metrics: set[str]):
     return Leaf(source, field, op, tuple(value) if isinstance(value, list) else value)
 
 
+def _parse_show(raw, metrics: set[str]) -> tuple:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProfileError(f'show: expected a list of attribute / metric names, got {raw!r}')
+    known = {*ATTRIBUTES, *metrics}
+    for name in raw:
+        if not isinstance(name, str) or name not in known:
+            raise ProfileError(f'show: unknown attribute or metric {name!r}. Known: {", ".join(ATTRIBUTES)}, '
+                               f'{", ".join(sorted(metrics))}')
+    return tuple(dict.fromkeys(raw))
+
+
 def parse_profile(text: str, metrics: set[str], path: str | None = None) -> Profile:
     """Parse and validate profile YAML. metrics = allowed item_metrics column names."""
     try:
@@ -171,12 +191,12 @@ def parse_profile(text: str, metrics: set[str], path: str | None = None) -> Prof
         raise ProfileError(f'invalid YAML: {e}') from e
     if not isinstance(raw, dict) or not raw.get('name') or not isinstance(raw.get('steps'), list) or not raw['steps']:
         raise ProfileError('profile needs a "name" and a non-empty "steps" list')
-    extra = set(raw) - {'name', 'description', 'steps'}
+    extra = set(raw) - {'name', 'description', 'steps', 'show'}
     if extra:
         raise ProfileError(f'unknown top-level key(s) {sorted(extra)}')
     steps = tuple(Step(i, _parse_condition(s, f'step {i}', metrics), s.get('label') if isinstance(s, dict) else None)
                   for i, s in enumerate(raw['steps'], 1))
-    return Profile(str(raw['name']), steps, text, path, raw.get('description'))
+    return Profile(str(raw['name']), steps, text, path, raw.get('description'), _parse_show(raw.get('show'), metrics))
 
 
 def load_profile(path: str | Path, metrics: set[str]) -> Profile:

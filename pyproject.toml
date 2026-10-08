@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Explainable screener for stocks, ETFs and funds on Yahoo Finance data"
 requires-python = ">=3.13"
 
+[project.optional-dependencies]
+sheets = ["gspread>=6"]
+
 [project.scripts]
 screener = "screener.cli:main"
 

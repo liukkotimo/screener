@@ -2,6 +2,7 @@
 # Low valuation must be accompanied by at least 5 percent free cash flow yield.
 name: cheap_quality
 description: Profitable cash-generating companies with manageable debt and modest valuation.
+show: [exchange]
 steps:
 - label: equities only
   attr: type

@@ -6,3 +6,7 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+
+profiles/
+.env
+.config/

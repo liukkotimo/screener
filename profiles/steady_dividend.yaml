@@ -1,5 +1,6 @@
 # Low-risk dividend payers: shows that profiles are not tied to one strategy.
 name: steady_dividend
+show: [exchange]
 steps:
   - {attr: type, op: ==, value: EQUITY}
   - {attr: sector, op: not_in, value: [Energy, Basic Materials]}
