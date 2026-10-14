@@ -68,7 +68,8 @@ def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: 
     """
     prices     DataFrame indexed by date with close, adj_close, volume (quote units, e.g. pence)
     dividends  Series indexed by ex-date (quote units)
-    item       dict with currency, market_cap, market_cap_date, total_assets,
+    item       dict with currency, market_cap, market_cap_date, market_cap_close (close on or before
+               market_cap_date, from all stored prices: the snapshot may be newer than as-of), total_assets,
                financial_currency, forward_eps, forward_eps_date
     fx         EUR per unit of the item's major currency, indexed by date; None for EUR items
     annual     annual statements (fundamental_annual columns) indexed by fiscal year end, in the financial
@@ -108,10 +109,8 @@ def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: 
 
     # The market cap is a snapshot from market_cap_date; scale it by the price change to as-of.
     market_cap = None
-    if item.get('market_cap') and item.get('market_cap_date') and last_close is not None:
-        close_then = value_at(close, item['market_cap_date'])
-        if close_then:
-            market_cap = item['market_cap'] * last_close / close_then
+    if item.get('market_cap') and item.get('market_cap_close') and last_close is not None:
+        market_cap = item['market_cap'] * last_close / item['market_cap_close']
     m['market_cap'] = market_cap
     m['market_cap_eur'] = to_eur(market_cap)
     m['total_assets_eur'] = to_eur(item.get('total_assets'))
@@ -190,7 +189,8 @@ def calc_metrics(conn: sqlite3.Connection, asof: str | None = None, tickers: lis
     fx = load_fx(conn)
 
     sql = ('SELECT item_id, ticker, currency, market_cap, market_cap_date, total_assets, financial_currency, '
-           'forward_eps, forward_eps_date FROM item WHERE ')
+           'forward_eps, forward_eps_date, (SELECT p.close FROM price_daily p WHERE p.item_id = item.item_id '
+           'AND p.date <= item.market_cap_date ORDER BY p.date DESC LIMIT 1) AS market_cap_close FROM item WHERE ')
     if tickers:
         items = conn.execute(sql + f'ticker IN ({",".join("?" * len(tickers))})', [t.upper() for t in tickers])
     else:

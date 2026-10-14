@@ -51,6 +51,15 @@ def test_gbp_pence_item(conn):
     assert m['drawdown_52w'] == 0.0
 
 
+def test_backdated_market_cap_scales_back_from_a_newer_snapshot(conn):
+    dates = pd.bdate_range('2026-01-01', '2026-03-31')
+    closes = [10.0] * (len(dates) - 5) + [8.0] * 5                   # falls 20 % in the last week
+    i = add_item(conn, 'N.HE', 'EUR', market_cap=8e9, market_cap_date='2026-03-31')  # snapshot at 8.0
+    add_prices(conn, i, dates, closes)
+    calc_metrics(conn, asof='2026-03-20')                            # before the snapshot, price 10.0
+    assert metrics(conn, 'N.HE')['market_cap'] == pytest.approx(1e10)
+
+
 def test_missing_fx_and_no_prices(conn):
     dates = pd.bdate_range('2026-01-01', '2026-03-31')
     i = add_item(conn, 'X.ST', 'SEK', market_cap=5e9, market_cap_date='2026-03-31')
