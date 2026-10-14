@@ -99,6 +99,10 @@ def group_div():
 def group_fund():
     for s in ALL:
         get(f'fundamentals/{s}', f'fundamentals_{safe_name(s)}.json')
+    # the filtered shape the client uses (flattened 'Section::Sub' keys), for tests/test_eodhd.py
+    from screener.market_data.eodhd import FUNDAMENTALS_FILTER
+    for s in ('NOKIA.HE', 'SPY.US'):
+        get(f'fundamentals/{s}', f'fundamentals_{safe_name(s)}_filter.json', filter=FUNDAMENTALS_FILTER)
 
 
 def group_fx():
