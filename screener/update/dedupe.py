@@ -1,63 +1,80 @@
 """
 Keeping one listing per company.
 
-Yahoo screener regions are listing regions: 'de' returns every Frankfurt/Stuttgart/... line of foreign
-companies and 'us' the OTC lines, so one company can appear five or more times. Listings are grouped by
-(type, name); per group the home-exchange listing is kept, otherwise the most liquid one. The others get
-active = 0 and duplicate_of = the kept item, so the step is visible and reversible (reset_duplicates).
+A company can be listed on several exchanges (NOKIA.HE and NOKIA.ST, Nordea on HE, ST and CO). Listings
+are grouped when they share an ISIN or the same (type, name); per group the home-exchange listing is kept
+(the exchange of the ISIN's country), otherwise the most liquid one. The others get active = 0 and
+duplicate_of = the kept item, so the step is visible and reversible (reset_duplicates).
 """
 import sqlite3
 
-# Yahoo exchange codes of a company's home market, by Yahoo country.
+# EODHD exchange codes of a company's home market, by ISIN country prefix (ISO 3166 alpha-2).
 HOME_EXCHANGES = {
-    'United States': {'NYQ', 'NMS', 'NGM', 'NCM', 'ASE', 'PCX', 'NAS', 'BTS'},
-    'Germany': {'GER'},
-    'Finland': {'HEL'},
-    'Sweden': {'STO'},
-    'Norway': {'OSL'},
-    'Denmark': {'CPH'},
-    'France': {'PAR'},
-    'Netherlands': {'AMS'},
-    'Belgium': {'BRU'},
-    'Italy': {'MIL'},
-    'Spain': {'MCE'},
-    'Austria': {'VIE'},
-    'Switzerland': {'EBS'},
-    'United Kingdom': {'LSE'},
-    'Japan': {'JPX'},
-    'Hong Kong': {'HKG'},
-    'Australia': {'ASX'},
-    'Canada': {'TOR', 'VAN'},
+    'US': {'US'},
+    'DE': {'XETRA'},
+    'FI': {'HE'},
+    'SE': {'ST'},
+    'NO': {'OL'},
+    'DK': {'CO'},
+    'FR': {'PA'},
+    'NL': {'AS'},
+    'BE': {'BR'},
+    'ES': {'MC'},
+    'AT': {'VI'},
+    'CH': {'SW'},
+    'GB': {'LSE'},
+    'IE': {'IR'},
+    'PT': {'LS'},
+    'AU': {'AU'},
+    'CA': {'TO', 'V'},
 }
 
 
 def is_home(item) -> bool:
-    return item['exchange'] in HOME_EXCHANGES.get(item['country'], ())
+    return bool(item['isin']) and item['exchange'] in HOME_EXCHANGES.get(item['isin'][:2], ())
 
 
 def find_duplicates(conn: sqlite3.Connection) -> list[tuple[dict, list[dict]]]:
     """
-    Groups of active items with the same type and name: (kept, [others]), ordered by name.
+    Groups of active items sharing an ISIN or (type, name): (kept, [others]), ordered by the kept name.
     Kept: a home-exchange listing first, then the highest avg_value_traded_eur_3m of the latest metrics
     (missing counts as 0), then the ticker.
     """
     rows = conn.execute(
-        """SELECT i.item_id, i.ticker, i.name, i.type, i.exchange, i.country,
+        """SELECT i.item_id, i.ticker, i.name, i.type, i.exchange, i.isin,
                   m.avg_value_traded_eur_3m AS turnover
            FROM item i
            LEFT JOIN item_metrics m ON m.item_id = i.item_id
                 AND m.asof_date = (SELECT MAX(asof_date) FROM item_metrics)
-           WHERE i.active = 1 AND i.name IS NOT NULL""").fetchall()
+           WHERE i.active = 1 AND (i.name IS NOT NULL OR i.isin IS NOT NULL)""").fetchall()
+    items = {r['item_id']: dict(r) for r in rows}
+    # Union-find: an item joins the group of the first item seen with the same ISIN or the same (type, name).
+    parent = {i: i for i in items}
+
+    def root(i):
+        while parent[i] != i:
+            i = parent[i]
+        return i
+
+    first_seen = {}
+    for i, it in items.items():
+        for key in (('isin', it['isin']), ('name', it['type'], it['name'])):
+            if key[-1] is None:
+                continue
+            if key in first_seen:
+                parent[root(i)] = root(first_seen[key])
+            else:
+                first_seen[key] = i
     groups = {}
-    for r in rows:
-        groups.setdefault((r['type'], r['name']), []).append(dict(r))
+    for i in items:
+        groups.setdefault(root(i), []).append(items[i])
     result = []
-    for key in sorted(groups, key=lambda k: (k[1], k[0] or '')):
-        items = groups[key]
-        if len(items) < 2:
+    for group in groups.values():
+        if len(group) < 2:
             continue
-        items.sort(key=lambda i: (not is_home(i), -(i['turnover'] or 0), i['ticker']))
-        result.append((items[0], items[1:]))
+        group.sort(key=lambda i: (not is_home(i), -(i['turnover'] or 0), i['ticker']))
+        result.append((group[0], group[1:]))
+    result.sort(key=lambda g: (g[0]['name'] or '', g[0]['ticker']))
     return result
 
 

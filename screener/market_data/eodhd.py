@@ -59,6 +59,10 @@ class EodhdError(Exception):
         self.status = status
 
 
+class QuotaExhausted(EodhdError):
+    """The next call would leave less than EodhdClient.reserve of today's quota. Runs stop; re-run tomorrow."""
+
+
 def major_currency(currency: str | None) -> tuple[str | None, float]:
     """('GBX') -> ('GBP', 0.01); ('USD') -> ('USD', 1.0)."""
     return MINOR_UNITS.get(currency, (currency, 1.0))
@@ -221,18 +225,35 @@ def api_key() -> str:
 
 
 class EodhdClient:
-    """Blocking EODHD client: throttle between calls, retries on 429/5xx, counts quota calls spent."""
+    """
+    Blocking EODHD client: throttle between calls, retries on 429/5xx, counts quota calls spent and refuses
+    a call (QuotaExhausted) that would leave less than `reserve` calls of today's quota.
+    """
 
     COSTS = {'fundamentals': 10, 'eod-bulk-last-day': 100, 'user': 0}  # endpoint -> calls; default 1
+    QUOTA_RECHECK_CALLS = 2000  # re-read /api/user after this many calls (other programs may use the key too)
 
-    def __init__(self, key: str | None = None, min_interval: float = 0.1, retries: int = 4, timeout: float = 60):
+    def __init__(self, key: str | None = None, min_interval: float = 0.1, retries: int = 4, timeout: float = 60,
+                 reserve: int = 1000):
         self._key = key or api_key()
         self.min_interval = min_interval  # seconds between outgoing calls (~10/s; EODHD allows 1000/min)
         self.retries = retries
         self.timeout = timeout
+        self.reserve = reserve  # calls of the daily quota left untouched for manual use
         self.calls = 0  # quota calls spent by this client
+        self._quota_left = None  # calls left today at the last /api/user check
+        self._calls_at_check = 0
         self._last_call = 0.0
         self._session = requests.Session()
+
+    def _check_quota(self, cost: int):
+        """Raise QuotaExhausted if spending `cost` calls would cut into the reserve."""
+        if self._quota_left is None or self.calls - self._calls_at_check >= self.QUOTA_RECHECK_CALLS:
+            u = self.get_usage()
+            self._quota_left, self._calls_at_check = u['limit'] - u['used'], self.calls
+        left = self._quota_left - (self.calls - self._calls_at_check)
+        if left - cost < self.reserve:
+            raise QuotaExhausted(f'daily EODHD quota nearly used up ({left} calls left, reserve {self.reserve})')
 
     def _throttle(self):
         """Simple blocking throttle between outgoing calls."""
@@ -245,6 +266,9 @@ class EodhdClient:
         """GET BASE_URL/path as JSON. Retries 429, 5xx and network errors with backoff; raises EodhdError."""
         endpoint = path.split('/')[0]
         what = f'{path} {params}' if params else path  # for messages; never contains the key
+        cost = self.COSTS.get(endpoint, 1)
+        if cost:
+            self._check_quota(cost)
         for attempt in range(self.retries + 1):
             self._throttle()
             try:
@@ -255,7 +279,7 @@ class EodhdClient:
             else:
                 status = r.status_code
                 if status in (200, 404):  # EODHD charges for unknown symbols too
-                    self.calls += self.COSTS.get(endpoint, 1)
+                    self.calls += cost
                 if status == 200:
                     try:
                         return r.json()
@@ -279,6 +303,10 @@ class EodhdClient:
         u = self._get('user')
         return {'used': u.get('apiRequests'), 'limit': u.get('dailyRateLimit'), 'extra': u.get('extraLimit'),
                 'date': u.get('apiRequestsDate')}
+
+    def get_exchanges(self) -> list[dict]:
+        """All exchanges: dicts with Code, Name, Country, Currency, CountryISO2, OperatingMIC."""
+        return self._get('exchanges-list/')
 
     def get_exchange_symbols(self, exchange: str, delisted: bool = False) -> list[dict]:
         """Listed symbols of an exchange: dicts with Code, Name, Country, Exchange, Currency, Type, Isin."""
@@ -317,6 +345,8 @@ class EodhdClient:
                 continue
             try:
                 rows = self._get(f'eod/EUR{c}.FOREX', **{'from': start.isoformat()})
+            except QuotaExhausted:
+                raise
             except EodhdError as e:
                 logger.warning(f'FX {c}: {e}')
                 continue

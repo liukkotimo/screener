@@ -1,10 +1,10 @@
 """
-Incremental update of daily prices and dividends.
+Incremental update of daily prices and dividends, one item at a time (3 EODHD calls: eod, div, splits).
 
-Yahoo re-adjusts the whole history after every dividend (adj_close) and split (close and adj_close).
-Appending new days to an old, differently adjusted history would corrupt returns, so each incremental
-fetch re-downloads a few overlapping days. If a stored overlapping day no longer matches Yahoo, the item's
-whole history is re-downloaded and replaced.
+EODHD recomputes the whole adjusted_close history after every dividend and split, and our split-adjusted
+close changes after a split. Appending new days to an old, differently adjusted history would corrupt
+returns, so each incremental fetch re-downloads a few overlapping days. If a stored overlapping day no longer
+matches, the item's whole history is re-downloaded and replaced.
 """
 import logging
 import math
@@ -14,11 +14,12 @@ from datetime import date, timedelta
 import pandas as pd
 
 from screener.db import log_fetch
+from screener.market_data.eodhd import EodhdError, QuotaExhausted
 
 logger = logging.getLogger(__name__)
 
 OVERLAP_DAYS = 10       # calendar days re-downloaded before the last stored date
-MATCH_TOLERANCE = 1e-4  # relative difference that counts as "Yahoo re-adjusted the history"
+MATCH_TOLERANCE = 1e-4  # relative difference that counts as "the history was re-adjusted"
 
 
 def _num(v):
@@ -26,12 +27,13 @@ def _num(v):
 
 
 def select_items(conn: sqlite3.Connection, tickers: list[str] | None) -> list[sqlite3.Row]:
-    sql = """SELECT i.item_id, i.ticker, (SELECT MAX(date) FROM price_daily p WHERE p.item_id = i.item_id) AS last_date
+    sql = """SELECT i.item_id, i.ticker, i.currency,
+                    (SELECT MAX(date) FROM price_daily p WHERE p.item_id = i.item_id) AS last_date
              FROM item i WHERE """
     if tickers:
         return conn.execute(sql + f'i.ticker IN ({",".join("?" * len(tickers))})',
                             [t.upper() for t in tickers]).fetchall()
-    return conn.execute(sql + 'i.active = 1').fetchall()
+    return conn.execute(sql + 'i.active = 1 ORDER BY i.ticker').fetchall()
 
 
 def history_mismatch(conn: sqlite3.Connection, item_id: int, df: pd.DataFrame, last_date: str) -> str | None:
@@ -72,57 +74,50 @@ def store_history(conn: sqlite3.Connection, item_id: int, df: pd.DataFrame, repl
     return len(rows)
 
 
-def update_prices(conn: sqlite3.Connection, yahoo, tickers: list[str] | None = None, years: int = 5,
-                  batch_size: int = 50) -> dict:
+def _fetch(client, item, start: date) -> tuple[pd.DataFrame | None, str | None]:
+    """(history, None) or (None, error). QuotaExhausted is passed on: the run must stop."""
+    try:
+        df = client.get_history(item['ticker'], start, item['currency'])
+    except QuotaExhausted:
+        raise
+    except EodhdError as e:
+        return None, 'no price data returned' if e.status == 404 else str(e)
+    return (df, None) if not df.empty else (None, 'no price data returned')
+
+
+def update_prices(conn: sqlite3.Connection, client, tickers: list[str] | None = None, years: int = 5) -> dict:
     items = select_items(conn, tickers)
     full_start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=years)).date()
     stats = {'selected': len(items), 'ok': 0, 'failed': 0, 'refetched': 0, 'rows': 0}
+    new = sum(1 for r in items if r['last_date'] is None)
+    logger.info(f'update prices: {new} new (since {full_start}), {len(items) - new} incremental')
 
-    def fetch_full(group):
-        history = yahoo.get_history_bulk([r['ticker'] for r in group], full_start, batch_size)
-        for r in group:
-            df = history.get(r['ticker'])
-            if df is None:
-                stats['failed'] += 1
-                logger.warning(f'{r["ticker"]}: no price data returned')
-                log_fetch(conn, 'price', r['ticker'], 'no price data returned')
+    def failed(item, error):
+        stats['failed'] += 1
+        logger.warning(f'{item["ticker"]}: {error}')
+        log_fetch(conn, 'price', item['ticker'], error)
+
+    try:
+        for n, item in enumerate(items, 1):
+            replace_all = item['last_date'] is None
+            start = full_start if replace_all else date.fromisoformat(item['last_date']) - timedelta(days=OVERLAP_DAYS)
+            df, error = _fetch(client, item, start)
+            if not error and not replace_all:
+                mismatch = history_mismatch(conn, item['item_id'], df, item['last_date'])
+                if mismatch:
+                    logger.info(f'{item["ticker"]}: history re-adjusted ({mismatch}), re-downloading')
+                    stats['refetched'] += 1
+                    replace_all = True
+                    df, error = _fetch(client, item, full_start)
+            if error:
+                failed(item, error)
             else:
-                stats['rows'] += store_history(conn, r['item_id'], df, replace_all=True)
+                stats['rows'] += store_history(conn, item['item_id'], df, replace_all)
                 stats['ok'] += 1
-                log_fetch(conn, 'price', r['ticker'])
+                log_fetch(conn, 'price', item['ticker'])
             conn.commit()
-
-    new = [r for r in items if r['last_date'] is None]
-    existing = sorted((r for r in items if r['last_date'] is not None), key=lambda r: r['last_date'])
-    logger.info(f'update prices: {len(new)} new (since {full_start}), {len(existing)} incremental')
-
-    for i in range(0, len(new), batch_size):
-        fetch_full(new[i:i + batch_size])
-
-    # Incremental: items sorted by last date, so each batch shares a similar start date.
-    refetch = []
-    for i in range(0, len(existing), batch_size):
-        group = existing[i:i + batch_size]
-        start = date.fromisoformat(group[0]['last_date']) - timedelta(days=OVERLAP_DAYS)
-        history = yahoo.get_history_bulk([r['ticker'] for r in group], start, batch_size)
-        for r in group:
-            df = history.get(r['ticker'])
-            if df is None:
-                stats['failed'] += 1
-                logger.warning(f'{r["ticker"]}: no price data returned')
-                log_fetch(conn, 'price', r['ticker'], 'no price data returned')
-                continue
-            mismatch = history_mismatch(conn, r['item_id'], df, r['last_date'])
-            if mismatch:
-                logger.info(f'{r["ticker"]}: history re-adjusted by Yahoo ({mismatch}), re-downloading')
-                refetch.append(r)
-                continue
-            stats['rows'] += store_history(conn, r['item_id'], df)
-            stats['ok'] += 1
-            log_fetch(conn, 'price', r['ticker'])
-        conn.commit()
-
-    stats['refetched'] = len(refetch)
-    for i in range(0, len(refetch), batch_size):
-        fetch_full(refetch[i:i + batch_size])
+            if n % 100 == 0:
+                logger.info(f'update prices: {n}/{len(items)}')
+    except QuotaExhausted as e:
+        logger.error(f'{e}; stopping (re-run later to resume)')
     return stats
