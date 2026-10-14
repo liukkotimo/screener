@@ -3,7 +3,9 @@ EODHD client and parsers, without network.
 
 Responses below are hand-written in EODHD's shapes (numbers as strings, 'NA' for missing sections, flattened
 filter keys) with made-up values; raw EODHD data is licensed and not committed. The tests at the end also
-run on real responses saved by scripts/spike_eodhd.py into tests/fixtures/eodhd/ (gitignored), if present.
+run on real responses saved during the migration spike in tests/fixtures/eodhd/ (gitignored), if present.
+The file names are <endpoint>_<symbol>.json (e.g. eod_NVDA.US.json); fundamentals_*_filter.json use
+market_data.eodhd.FUNDAMENTALS_FILTER.
 """
 import json
 from datetime import date
@@ -278,7 +280,7 @@ def test_api_key_from_environment(monkeypatch):
 def raw(name):
     path = RAW / f'{name}.json'
     if not path.exists():
-        pytest.skip(f'raw EODHD fixture {path.name} not present (run scripts/spike_eodhd.py)')
+        pytest.skip(f'raw EODHD fixture {path.name} not present')
     return json.loads(path.read_text())
 
 
