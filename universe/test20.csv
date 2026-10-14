@@ -1,23 +1,23 @@
-# Small test universe across exchanges, currencies and item types.
+# Small test universe across exchanges, currencies and item types (EODHD symbols CODE.EXCHANGE).
 ticker
 NOKIA.HE     # Helsinki, EUR
-SAMPO.HE
+SAMPO.HE     # split 5:1 in 2025
 KNEBV.HE
 VOLV-B.ST    # Stockholm, SEK
 ERIC-B.ST
 NOVO-B.CO    # Copenhagen, DKK
-AAPL         # US, USD
-MSFT
-JNJ
-SAP.DE       # Xetra, EUR
+AAPL.US      # US, USD
+MSFT.US
+JNJ.US
+SAP.XETRA    # Xetra, EUR
 ASML.AS      # Amsterdam
 MC.PA        # Paris
 NESN.SW      # Swiss, CHF
-SHEL.L       # London, GBp (pence)
-ULVR.L
-7203.T       # Tokyo, JPY
-SPY          # ETF, USD
+SHEL.LSE     # London, GBX (pence); statements in USD
+ULVR.LSE     # statements in EUR
+EQNR.OL      # Oslo, NOK
+SPY.US       # ETF, USD
 IWDA.AS      # ETF, EUR
-VWCE.DE      # ETF, EUR
-VFIAX        # mutual fund, USD
+VWCE.XETRA   # ETF, EUR
+VFIAX.US     # mutual fund, USD
 NOSUCH.XX    # deliberately invalid: must be logged, not abort the run

@@ -20,7 +20,7 @@ name: my_profile                # required; runs are grouped by this name
 description: one-line summary   # optional
 show: [sector, perf_1y, pe_forward]   # optional; extra columns for the survivors list (see below)
 steps:                          # required, non-empty list
-  - {attr: type, op: ==, value: EQUITY}
+  - {attr: type, op: ==, value: Common Stock}
   - label: shown in output      # optional on any step
     metric: market_cap_eur
     op: ">="
@@ -68,25 +68,27 @@ silently removes young listings. If that is not intended, put it inside an `any_
 
 ## Attributes (`attr:`)
 
-Text columns of the `item` table, from Yahoo's info. Comparison is **case-sensitive** and must match Yahoo's
-spelling exactly.
+Text columns of the `item` table, from EODHD (exchange symbol list and fundamentals). Comparison is
+**case-sensitive** and must match EODHD's spelling exactly.
 
 | attr | meaning | example values |
 |---|---|---|
-| `ticker` | Yahoo symbol | `NOKIA.HE`, `SHEL.L`, `AAPL` |
+| `ticker` | EODHD symbol `CODE.EXCHANGE` | `NOKIA.HE`, `VOLV-B.ST`, `SHEL.LSE`, `AAPL.US` |
 | `name` | company / fund name | |
-| `type` | Yahoo quoteType | `EQUITY`, `ETF`, `MUTUALFUND` |
-| `exchange` | Yahoo exchange code | `HEL`, `STO`, `CPH`, `NYQ`, `NMS`, `GER` (XETRA), `FRA`, `LSE`, `PNK` (OTC) |
-| `exchange_name` | readable exchange | `Helsinki`, `NYSE`, `NasdaqGS`, `XETRA` |
-| `country` | company domicile | `Finland`, `United States`, `United Kingdom` |
-| `currency` | quote currency (may be a minor unit) | `EUR`, `USD`, `SEK`, `GBp` |
-| `sector` | Yahoo sector | `Basic Materials`, `Communication Services`, `Consumer Cyclical`, `Consumer Defensive`, `Energy`, `Financial Services`, `Healthcare`, `Industrials`, `Real Estate`, `Technology`, `Utilities` |
-| `industry` | Yahoo industry (finer than sector) | `Banks - Regional`, `Software - Application` |
-| `source` | how the ticker entered the universe | `csv:test20`, `yahoo_screener:fi` |
+| `type` | EODHD type | `Common Stock`, `Preferred Stock`, `ETF`, `FUND` |
+| `exchange` | EODHD exchange code (the ticker suffix) | `HE`, `ST`, `CO`, `OL`, `XETRA`, `LSE`, `US` |
+| `exchange_name` | readable exchange | `Helsinki Exchange`, `Stockholm Exchange` |
+| `country` | country of the listing (not the company: `NOKIA.ST` has `Sweden`) | `Finland`, `Sweden`, `USA` |
+| `currency` | quote currency (may be a minor unit) | `EUR`, `SEK`, `USD`, `GBX` (pence) |
+| `sector` | EODHD sector | `Basic Materials`, `Communication Services`, `Consumer Cyclical`, `Consumer Defensive`, `Energy`, `Financial Services`, `Healthcare`, `Industrials`, `Real Estate`, `Technology`, `Utilities` |
+| `industry` | EODHD industry (finer than sector) | `Banks - Regional`, `Software - Application` |
+| `isin` | ISIN | `FI0009000681` |
+| `source` | how the ticker entered the universe | `csv:test20`, `eodhd:HE` |
 
-Tip: the same company is often listed on several exchanges (e.g. German regional exchanges `FRA`, `STU`,
-`MUN`, `DUS` plus OTC `PNK` in the US). `screener dedupe --apply` keeps one listing per company (see README);
-otherwise filter on `exchange` early to avoid duplicates and illiquid secondary listings. Funds/ETFs usually have no `sector`.
+Tip: the same company is often listed on several exchanges (e.g. Nokia on `HE` and `ST`, Nordea on `HE`,
+`ST` and `CO`). `screener dedupe --apply` keeps one listing per company (see README); otherwise filter on
+`exchange` early to avoid duplicates and illiquid secondary listings. Funds/ETFs have no `sector`, and
+sector/industry are only filled after `screener update fundamentals`.
 
 To check actual values in your database: `screener status TICKER` shows one item's attributes.
 
@@ -138,9 +140,9 @@ Note the sign: lower `cvar_95` = less tail risk, so filter with `<=`.
 
 | metric | definition |
 |---|---|
-| `market_cap` | Yahoo market cap scaled to as-of by the price change, in the major quote currency (GBP, not GBp) |
+| `market_cap` | EODHD market cap scaled to as-of by the price change, in the major quote currency (GBP, not GBX) |
 | `market_cap_eur` | `market_cap` in EUR — use this for cross-market comparison |
-| `total_assets_eur` | fund/ETF total assets in EUR (funds usually have no market cap) |
+| `total_assets_eur` | ETF total assets in EUR (ETFs have no market cap) |
 | `avg_value_traded_eur_3m` | average daily close × volume over 3 months, in EUR (NULL if no volume data) |
 | `price_eur` | last close in EUR |
 
@@ -158,15 +160,18 @@ visible until the next ex-date.
 
 ### Fundamentals (annual statements)
 
-From Yahoo's annual income statement, balance sheet and cash flow (`screener update fundamentals`), equities
-only. Rules:
+From EODHD's annual income statement, balance sheet and cash flow (`screener update fundamentals`), common
+stocks only. Rules:
 - Only **annual** figures (no trailing twelve months). The latest fiscal year used is the newest one that ended
   at least 90 days before as-of (assumed published by then); it is shown in `fiscal_year_end`. If that year is
   more than ~18 months old, all fundamental metrics are NULL.
 - Ratios within one statement need no currency conversion. Valuation metrics compare statement figures
-  (in Yahoo's `financialCurrency`, e.g. USD for Shell) with market cap / price in EUR at the as-of FX rate.
+  (in the statement currency `financial_currency`, e.g. USD for Shell) with market cap / price in EUR at the
+  as-of FX rate.
 - Values that make a ratio meaningless (EBIT or EBITDA ≤ 0, revenue ≤ 0, invested capital ≤ 0) give NULL.
-- Yahoo has about 4 fiscal years; stored years are kept, so history grows over time.
+- EBIT is pretax income + interest expense and EBITDA is EBIT + depreciation and amortization (computed by
+  us, not EODHD's own EBIT field). A company that reports no interest expense therefore has no EBIT.
+- EODHD has up to ~30 fiscal years; stored years are kept, restatements overwrite.
 
 | metric | definition | typical range |
 |---|---|---|
@@ -178,15 +183,14 @@ only. Rules:
 | `fcf_margin` | free cash flow / revenue | |
 | `net_debt_ebitda` | (total debt − cash and short-term investments) / EBITDA; negative = net cash | < 0 … 4 |
 | `interest_coverage` | EBIT / interest expense. **999** = interest expense reported as 0; NULL if not reported | 3 … 50 |
-| `pe_forward` | price / Yahoo's forward EPS (analyst estimate). NULL if EPS ≤ 0 or the as-of date is more than 31 days from the item info fetch (the estimate is a snapshot) | 8 … 40 |
+| `pe_forward` | price / consensus EPS estimate for the next fiscal year (EODHD earnings trend `+1y`). NULL if EPS ≤ 0 or the as-of date is more than 100 days from when the estimate was fetched (it is a snapshot, refreshed with the fundamentals) | 8 … 40 |
 | `ev_ebit` | (market cap + net debt) / EBIT. Minority interests are ignored | 5 … 30 |
 | `fcf_yield` | free cash flow / market cap | 0 … 0.10 |
 | `fcf_payout_ratio` | dividends paid / free cash flow; NULL if FCF ≤ 0 or no dividend line reported | 0 … 1 |
 
-Tips: `pe_forward` is computed by us with both sides in EUR; Yahoo's own `forwardPE` mixes currencies when
-quote and reporting currency differ (e.g. GBp price / USD EPS). Many companies with little or no debt do not
-report interest expense, so `interest_coverage` is NULL for them: combine it with `net_debt_ebitda` in an
-`any_of`. Banks and insurers have no meaningful EBIT/EBITDA or net debt; exclude `Financial Services` when
+Tips: `pe_forward` is computed by us with both sides in EUR, so it also works when quote and reporting
+currency differ (e.g. GBX price / USD EPS). Companies that report interest expense as 0 get
+`interest_coverage` 999; when it is not reported at all, EBIT and everything built on it is NULL. Banks and insurers have no meaningful EBIT/EBITDA or net debt; exclude `Financial Services` when
 screening on these.
 
 ### Data quality
@@ -222,7 +226,7 @@ steps:
   - label: equities only
     attr: type
     op: in
-    value: [EQUITY]
+    value: [Common Stock]
   - label: not too small
     metric: market_cap_eur
     op: ">="
@@ -254,7 +258,7 @@ steps:
 ```yaml
 name: steady_dividend
 steps:
-  - {attr: type, op: ==, value: EQUITY}
+  - {attr: type, op: ==, value: Common Stock}
   - {attr: sector, op: not_in, value: [Energy, Basic Materials]}
   - {metric: market_cap_eur, op: ">=", value: 10000000000}
   - {metric: dividend_yield, op: ">=", value: 0.05}
@@ -271,8 +275,8 @@ steps:
   - label: Nordic main exchanges
     attr: exchange
     op: in
-    value: [HEL, STO, CPH]
-  - {attr: type, op: ==, value: EQUITY}
+    value: [HE, ST, CO]
+  - {attr: type, op: ==, value: Common Stock}
   - label: tradable
     metric: avg_value_traded_eur_3m
     op: ">="
@@ -300,10 +304,10 @@ steps:
 ```yaml
 name: low_risk_large
 steps:
-  - label: primary US and German listings
+  - label: US and Xetra listings
     attr: exchange
     op: in
-    value: [NYQ, NMS, GER]
+    value: [US, XETRA]
   - {metric: market_cap_eur, op: ">=", value: 20000000000}
   - label: recent price data
     metric: last_price_date

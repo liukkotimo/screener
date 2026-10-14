@@ -1,7 +1,7 @@
 [project]
 name = "screener"
 version = "0.1.0"
-description = "Explainable screener for stocks, ETFs and funds on Yahoo Finance data"
+description = "Explainable screener for stocks, ETFs and funds on EODHD data"
 requires-python = ">=3.13"
 
 [project.optional-dependencies]

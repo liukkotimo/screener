@@ -5,6 +5,7 @@ import os
 import sys
 
 from screener import db
+from screener.market_data.eodhd import EodhdError
 
 logger = logging.getLogger('screener')
 
@@ -22,9 +23,9 @@ def load_dotenv(path='.env'):
             os.environ.setdefault(key.strip(), value.strip().strip('"\''))
 
 
-def _yahoo():
-    from screener.market_data.yahoo_finance import YahooFinance
-    return YahooFinance()
+def _eodhd():
+    from screener.market_data.eodhd import EodhdClient
+    return EodhdClient()
 
 
 def cmd_import_tickers(conn, args):
@@ -33,12 +34,14 @@ def cmd_import_tickers(conn, args):
     print(f'{added} added, {present} already present')
 
 
-def cmd_import_yahoo(conn, args):
-    from screener.update.universe import import_yahoo_screener
-    yahoo = _yahoo()
-    for region in args.region:
-        added, present = import_yahoo_screener(conn, yahoo, region, args.min_market_cap)
-        print(f'{region}: {added} added, {present} already present')
+def cmd_import_exchange(conn, args):
+    from screener.update.universe import import_exchange
+    client = _eodhd()
+    for code in args.exchanges:
+        added, present, skipped = import_exchange(conn, client, code.upper(), args.min_market_cap)
+        print(f'{code.upper()}: {added} added, {present} already present; skipped '
+              + ', '.join(f'{n} {reason}' for reason, n in sorted(skipped.items())))
+    print(f'EODHD calls used: {client.calls}')
 
 
 def cmd_dedupe(conn, args):
@@ -63,18 +66,21 @@ def cmd_update(conn, args):
     from screener.update.fx import update_fx
     from screener.update.items import update_items
     from screener.update.prices import update_prices
-    yahoo = _yahoo()
-    # fx last: it needs the financial currencies that items fetches
+    client = _eodhd()
+    # items first (prices need the quote currency), fx last (it needs the financial currencies)
     what = ['items', 'prices', 'fundamentals', 'fx'] if args.what == 'all' else [args.what]
-    if 'items' in what:
-        print('items:', update_items(conn, yahoo, args.tickers, args.max_age_days, args.limit))
-    if 'prices' in what:
-        print('prices:', update_prices(conn, yahoo, args.tickers, args.years))
-    if 'fundamentals' in what:
-        print('fundamentals:', update_fundamentals(conn, yahoo, args.tickers, args.fundamentals_max_age_days,
-                                                          args.limit))
-    if 'fx' in what:
-        print('fx:', update_fx(conn, yahoo, args.years))
+    try:
+        if 'items' in what:
+            print('items:', update_items(conn, client, args.tickers))
+        if 'prices' in what:
+            print('prices:', update_prices(conn, client, args.tickers, args.years))
+        if 'fundamentals' in what:
+            print('fundamentals:', update_fundamentals(conn, client, args.tickers, args.fundamentals_max_age_days,
+                                                       args.limit))
+        if 'fx' in what:
+            print('fx:', update_fx(conn, client, args.years))
+    finally:
+        print(f'EODHD calls used: {client.calls}')
 
 
 def cmd_metrics(conn, args):
@@ -165,7 +171,22 @@ def cmd_status(conn, args):
                           'WHERE last_error IS NOT NULL ORDER BY kind, key').fetchall()
     print(f'fetch errors: {len(errors)}')
     for e in errors:
-        print(f'  {e["kind"]:6} {e["key"]:15} {e["last_attempt_at"]}  {e["last_error"]}')
+        print(f'  {e["kind"]:12} {e["key"]:15} {e["last_attempt_at"]}  {e["last_error"]}')
+    _status_quota()
+
+
+def _status_quota():
+    """Today's EODHD API usage (a free call). Skipped quietly without a key or network."""
+    from screener.market_data.eodhd import EodhdClient, EodhdError
+    if not os.environ.get('EODHD_API_KEY'):
+        print('EODHD quota: unknown (EODHD_API_KEY not set)')
+        return
+    try:
+        u = EodhdClient().get_usage()
+    except EodhdError as e:
+        print(f'EODHD quota: unknown ({e})')
+        return
+    print(f'EODHD quota: {u["used"]} of {u["limit"]} calls used on {u["date"]} (UTC)')
 
 
 def _status_ticker(conn, ticker):
@@ -183,7 +204,9 @@ def _status_ticker(conn, ticker):
     annual = conn.execute('SELECT * FROM fundamental_annual WHERE item_id = ? ORDER BY fiscal_year_end',
                           (item['item_id'],)).fetchall()
     if annual:
-        print(f'annual statements ({annual[0]["currency"]}):')
+        n_years = len(annual)
+        annual = annual[-8:]
+        print(f'annual statements ({annual[-1]["currency"]}, latest {len(annual)} of {n_years} years):')
         cols = [k for k in annual[0].keys() if k not in ('item_id', 'currency')]
         for c in cols:
             print(f'  {c:24}' + ''.join(f'{_fmt(r[c]):>12}' for r in annual))
@@ -221,10 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument('--source', help='source label (default: csv:<file stem>)')
     s.set_defaults(func=cmd_import_tickers)
 
-    s = sub.add_parser('import-yahoo', help='add equities from the Yahoo screener')
-    s.add_argument('--region', action='append', required=True, help='Yahoo region code (fi, se, us, ...); repeatable')
-    s.add_argument('--min-market-cap', type=float, default=5e8)
-    s.set_defaults(func=cmd_import_yahoo)
+    s = sub.add_parser('import-exchange', help='add the listed common stocks of EODHD exchanges (e.g. HE ST)')
+    s.add_argument('exchanges', nargs='+', help='EODHD exchange codes, e.g. HE ST')
+    s.add_argument('--min-market-cap', type=float, default=5e8,
+                   help='minimum market cap in EUR (default 5e8); costs 100 calls per exchange')
+    s.set_defaults(func=cmd_import_exchange)
 
     s = sub.add_parser('dedupe', help='keep one listing per company, deactivate the others (dry run by default)')
     g = s.add_mutually_exclusive_group()
@@ -232,14 +256,13 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument('--reset', action='store_true', help='reactivate all listings deactivated as duplicates')
     s.set_defaults(func=cmd_dedupe)
 
-    s = sub.add_parser('update', help='fetch data from Yahoo')
+    s = sub.add_parser('update', help='fetch data from EODHD')
     s.add_argument('what', choices=['items', 'prices', 'fundamentals', 'fx', 'all'])
     s.add_argument('--tickers', nargs='+', help='only these tickers (items/prices/fundamentals)')
     s.add_argument('--years', type=int, default=5, help='history depth for new items/currencies (default 5)')
-    s.add_argument('--max-age-days', type=float, default=7, help='refresh item info older than this (default 7)')
-    s.add_argument('--fundamentals-max-age-days', type=float, default=30,
-                   help='refresh annual statements older than this (default 30)')
-    s.add_argument('--limit', type=int, help='items/fundamentals: fetch at most N items this run (never fetched first, '
+    s.add_argument('--fundamentals-max-age-days', type=float, default=90,
+                   help='refresh fundamentals older than this (default 90; 10 calls per item)')
+    s.add_argument('--limit', type=int, help='fundamentals: fetch at most N items this run (never fetched first, '
                                              'then the oldest; largest market cap first among equals)')
     s.set_defaults(func=cmd_update)
 
@@ -295,10 +318,12 @@ def main(argv=None):
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format='%(asctime)s %(levelname)-7s %(name)s: %(message)s', datefmt='%H:%M:%S')
     if not args.verbose:
-        logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
     conn = db.connect(args.db)
     try:
         args.func(conn, args)
+    except EodhdError as e:  # QuotaExhausted, a failed exchange list, ...: completed work is saved
+        sys.exit(f'error: {e}')
     except KeyboardInterrupt:
         print('interrupted (completed batches are saved; re-run to resume)', file=sys.stderr)
         sys.exit(130)

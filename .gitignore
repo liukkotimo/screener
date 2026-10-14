@@ -10,3 +10,6 @@ __pycache__/
 profiles/
 .env
 .config/
+
+# raw EODHD responses: licensed data, not for redistribution (see README)
+tests/fixtures/eodhd/

@@ -1,95 +1,85 @@
-"""Updating item base info (name, type, exchange, sector, market cap, ...) from Yahoo's info endpoint."""
-import json
+"""
+Updating item base info (name, type, exchange, currency, ISIN, market cap) from EODHD's exchange lists.
+
+Per exchange of the selected items: the symbol list (1 call) and the last-day bulk prices with market caps
+(100 calls), so refreshing every item costs 101 calls per exchange, independent of the number of items.
+Sector, industry and financial currency come with the fundamentals (update/fundamentals.py).
+"""
 import logging
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
 
 from screener.db import log_fetch, now_utc
 
 logger = logging.getLogger(__name__)
 
-# item column -> Yahoo info keys, first non-empty wins
-INFO_FIELDS = {
-    'name': ('longName', 'shortName'),
-    'type': ('quoteType',),
-    'exchange': ('exchange',),
-    'exchange_name': ('fullExchangeName',),
-    'country': ('country',),
-    'currency': ('currency',),
-    'sector': ('sector',),
-    'industry': ('industry',),
-    'market_cap': ('marketCap',),
-    'total_assets': ('totalAssets',),
-    'shares_outstanding': ('sharesOutstanding',),
-    'financial_currency': ('financialCurrency',),
-    'forward_eps': ('forwardEps',),
-}
 
-# Stop the run (it is resumable) when Yahoo fails this many tickers in a row: it is probably blocking us.
-MAX_CONSECUTIVE_FAILURES = 25
+def exchange_of(ticker: str) -> str:
+    """'VOLV-B.ST' -> 'ST' (EODHD symbols are CODE.EXCHANGE)."""
+    return ticker.rsplit('.', 1)[1] if '.' in ticker else ''
 
 
-def info_to_columns(info: dict) -> dict:
-    """Pick item columns from a Yahoo info dict. Missing values are None."""
-    cols = {}
-    for col, keys in INFO_FIELDS.items():
-        cols[col] = next((info[k] for k in keys if info.get(k) not in (None, '')), None)
-    return cols
+def code_of(ticker: str) -> str:
+    """'VOLV-B.ST' -> 'VOLV-B'."""
+    return ticker.rsplit('.', 1)[0]
 
 
-def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_days: float,
-                 limit: int | None = None) -> list[sqlite3.Row]:
-    """Active items whose info is missing or older than max_age_days (or exactly the given tickers)."""
+def symbol_columns(symbol: dict | None, bulk: dict | None, exchange: dict) -> dict:
+    """Item columns from a symbol list row and a bulk row (either may be None). Missing values are None."""
+    symbol, bulk = symbol or {}, bulk or {}
+    cap = bulk.get('MarketCapitalization')
+    return {
+        'name': symbol.get('Name') or bulk.get('name') or None,
+        'type': symbol.get('Type') or bulk.get('type') or None,
+        'exchange': exchange['Code'],
+        'exchange_name': exchange.get('Name'),
+        'country': symbol.get('Country') or None,
+        'currency': symbol.get('Currency') or None,
+        'isin': symbol.get('Isin') or None,
+        'market_cap': float(cap) if cap else None,  # quote currency; major unit
+        'market_cap_date': bulk.get('date') if cap else None,
+    }
+
+
+def select_items(conn: sqlite3.Connection, tickers: list[str] | None) -> list[sqlite3.Row]:
     if tickers:
         marks = ','.join('?' * len(tickers))
         return conn.execute(f'SELECT item_id, ticker FROM item WHERE ticker IN ({marks}) ORDER BY ticker',
                             [t.upper() for t in tickers]).fetchall()
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat(timespec='seconds')
-    return conn.execute(
-        """SELECT item_id, ticker FROM item
-           WHERE active = 1 AND (info_updated_at IS NULL OR info_updated_at < ?)
-           ORDER BY info_updated_at IS NOT NULL, info_updated_at, market_cap DESC, ticker
-           LIMIT ?""", (cutoff, -1 if limit is None else limit)).fetchall()
+    return conn.execute('SELECT item_id, ticker FROM item WHERE active = 1 ORDER BY ticker').fetchall()
 
 
-def update_items(conn: sqlite3.Connection, yahoo, tickers: list[str] | None = None,
-                 max_age_days: float = 7, limit: int | None = None) -> dict:
-    """Fetch info for each selected item and store it. Failures are logged per ticker; the run continues."""
-    items = select_items(conn, tickers, max_age_days, limit)
-    logger.info(f'update items: {len(items)} to fetch')
-    ok = failed = consecutive = 0
-    for n, item in enumerate(items, 1):
-        try:
-            info = yahoo.get_info(item['ticker'])
-            # Yahoo answers unknown symbols with a near-empty dict, e.g. {'trailingPegRatio': None}.
-            error = None if info.get('quoteType') else 'no info returned (unknown symbol?)'
-        except Exception as e:
-            info, error = None, f'{type(e).__name__}: {e}'
-        if error:
-            failed += 1
-            consecutive += 1
-            logger.warning(f'{item["ticker"]}: {error}')
-            log_fetch(conn, 'info', item['ticker'], error)
-            conn.commit()
-            if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                logger.error(f'{consecutive} failures in a row, stopping (re-run later to resume)')
-                break
-            continue
+def update_items(conn: sqlite3.Connection, client, tickers: list[str] | None = None) -> dict:
+    """Refresh the selected items (default: all active) from their exchanges' symbol lists and bulk prices."""
+    items = select_items(conn, tickers)
+    by_exchange = {}
+    for item in items:
+        by_exchange.setdefault(exchange_of(item['ticker']), []).append(item)
+    exchanges = {e['Code']: e for e in client.get_exchanges()} if items else {}
+    logger.info(f'update items: {len(items)} items on {len(by_exchange)} exchange(s): {", ".join(by_exchange)}')
 
-        consecutive = 0
-        cols = info_to_columns(info)
-        now = now_utc()
-        # COALESCE keeps a known value when Yahoo temporarily omits a field.
-        sets = ', '.join(f'{c} = COALESCE(?, {c})' for c in cols)
-        conn.execute(f'UPDATE item SET {sets}, info_updated_at = ?, '
-                     'market_cap_date = CASE WHEN ? IS NOT NULL THEN ? ELSE market_cap_date END '
-                     'WHERE item_id = ?',
-                     [*cols.values(), now, cols['market_cap'], date.today().isoformat(), item['item_id']])
-        conn.execute('INSERT OR REPLACE INTO item_info_raw (item_id, fetched_at, info_json) VALUES (?, ?, ?)',
-                     (item['item_id'], now, json.dumps(info, default=str)))
-        log_fetch(conn, 'info', item['ticker'])
+    stats = {'selected': len(items), 'exchanges': len(by_exchange), 'ok': 0, 'failed': 0}
+    for code, group in sorted(by_exchange.items()):
+        exchange = exchanges.get(code)
+        if exchange is None:
+            symbols = bulk = {}
+        else:
+            symbols = {s['Code'].upper(): s for s in client.get_exchange_symbols(code)}
+            bulk = {b['code'].upper(): b for b in client.get_bulk_last_day(code, extended=True)}
+        for item in group:
+            c = code_of(item['ticker'])
+            if c not in symbols and c not in bulk:
+                stats['failed'] += 1
+                error = (f'not in the EODHD symbol list of {code} (delisted or wrong symbol?)' if exchange
+                         else f'unknown EODHD exchange code "{code}"')
+                logger.warning(f'{item["ticker"]}: {error}')
+                log_fetch(conn, 'info', item['ticker'], error)
+                continue
+            cols = symbol_columns(symbols.get(c), bulk.get(c), exchange)
+            # COALESCE keeps a known value when EODHD omits a field (e.g. no market cap on a quiet day).
+            sets = ', '.join(f'{k} = COALESCE(?, {k})' for k in cols)
+            conn.execute(f'UPDATE item SET {sets}, info_updated_at = ? WHERE item_id = ?',
+                         [*cols.values(), now_utc(), item['item_id']])
+            log_fetch(conn, 'info', item['ticker'])
+            stats['ok'] += 1
         conn.commit()
-        ok += 1
-        if n % 50 == 0:
-            logger.info(f'update items: {n}/{len(items)}')
-    return {'selected': len(items), 'ok': ok, 'failed': failed}
+    return stats

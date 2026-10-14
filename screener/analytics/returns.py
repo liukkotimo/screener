@@ -3,7 +3,7 @@ Return and drawdown metrics on a single price series.
 
 All functions take a pandas Series of prices indexed by date (ascending; normally adj_close, which includes
 dividends) and an as-of date, and return a float, or None when the history does not cover the window.
-No database or Yahoo code here, so the module can be reused elsewhere.
+No database or EODHD code here, so the module can be reused elsewhere.
 """
 import pandas as pd
 
