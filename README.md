@@ -115,14 +115,13 @@ The calculations live in `screener/analytics/` as plain functions on a pandas Se
 ## Screening
 
 A profile is a YAML file with strictly sequential steps; each step only sees the survivors of the previous
-one (step 1: all active items). See `profiles/` for examples (`potential_turnaround.yaml`, `steady_dividend.yaml`,
-`example.yaml`).
-
-For more information see [profiles.md](doc/profiles.md)
+one (step 1: all active items). Profiles are your own files: keep them in `profiles/`, which is gitignored so
+they stay private. [profiles.md](doc/profiles.md) explains the format, attributes and metrics, and has
+[complete examples](doc/profiles.md#examples) to copy as a starting point.
 
 ```bash
-screener screen --profile profiles/potential_turnaround.yaml          # uses the latest metrics as-of date
-screener screen --profile profiles/potential_turnaround.yaml --from-step 6   # re-use stored steps 1-5
+screener screen --profile profiles/my_profile.yaml                # uses the latest metrics as-of date
+screener screen --profile profiles/my_profile.yaml --from-step 6   # re-use stored steps 1-5
 screener explain NOVO-B.CO               # every step with tested values; where and why it was eliminated
 screener explain NOVO-B.CO --run 12
 screener runs                            # list runs
@@ -143,7 +142,7 @@ with the profile's `show:` columns first and every field the steps tested after 
 
 ```bash
 pip install -e .[sheets]                       # installs gspread (optional dependency)
-screener screen --profile profiles/potential_turnaround.yaml --to-sheet
+screener screen --profile profiles/my_profile.yaml --to-sheet
 screener export-sheet                          # latest run;  or: screener export-sheet 12
 ```
 
