@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from screener.db import log_fetch, now_utc
-from screener.market_data.yahoo_finance import FUNDAMENTAL_COLUMNS
+from screener.market_data.eodhd import FUNDAMENTAL_COLUMNS
 from screener.update.items import MAX_CONSECUTIVE_FAILURES
 
 logger = logging.getLogger(__name__)

@@ -189,7 +189,7 @@ def parse_info(data: dict) -> dict:
     etf_assets = data.get('ETF_Data::TotalAssets')
     annual_ccy = [r.get('currency_symbol') for _, r in sorted(_section(data, 'Financials::Income_Statement::yearly')
                                                               .items(), reverse=True) if isinstance(r, dict)]
-    eps, eps_date = forward_eps(data)
+    eps, eps_period = forward_eps(data)
     return {
         'name': g.get('Name') or None,
         'type': g.get('Type') or None,
@@ -203,7 +203,7 @@ def parse_info(data: dict) -> dict:
         'total_assets': _num(etf_assets) if not isinstance(etf_assets, dict) else None,
         'financial_currency': next((c for c in annual_ccy if c), None),
         'forward_eps': eps,
-        'forward_eps_date': eps_date,
+        'forward_eps_period': eps_period,
     }
 
 

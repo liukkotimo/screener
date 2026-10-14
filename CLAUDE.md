@@ -20,7 +20,9 @@ Usage and behaviour: README.md. Writing screening profiles: doc/profiles.md.
   Profiles pick up the new column automatically.
 - Adding a filterable item attribute: `ATTRIBUTES` in `screening/profile.py` (plus a migration if it is a new
   column), and `doc/profiles.md`.
-- Never edit an existing migration; add the next numbered file.
+- Never edit an existing migration; add the next numbered file. (Exception, done once: when the data source
+  changed from Yahoo to EODHD, migrations 001-005 were squashed into `001_schema.sql` because no old
+  database survived. Don't repeat that for a database that holds data you want to keep.)
 
 ## Working conventions
 
