@@ -32,14 +32,14 @@ def metrics(conn, ticker):
 def test_gbp_pence_item(conn):
     dates = pd.bdate_range('2025-01-01', '2026-03-31')
     closes = [1000.0] * (len(dates) - 1) + [1200.0]          # pence; +20 % on the last day
-    i = add_item(conn, 'SHEL.L', 'GBp', market_cap=2e9, market_cap_date='2026-03-30')  # GBP, at 1000p
+    i = add_item(conn, 'SHEL.LSE', 'GBX', market_cap=2e9, market_cap_date='2026-03-30')  # GBP, at 1000p
     add_prices(conn, i, dates, closes)
     conn.execute("INSERT INTO dividend VALUES (?, '2025-09-01', 30.0)", (i,))           # pence
     conn.executemany('INSERT INTO fx_rate_daily VALUES (?, ?, ?)',
                      [('GBP', d.strftime('%Y-%m-%d'), 1.2) for d in dates])
 
     assert calc_metrics(conn)['stored'] == 1
-    m = metrics(conn, 'SHEL.L')
+    m = metrics(conn, 'SHEL.LSE')
     assert m['asof_date'] == '2026-03-31' and m['last_price_date'] == '2026-03-31'
     assert m['price_eur'] == pytest.approx(12.0 * 1.2)                 # 1200p = 12 GBP
     assert m['market_cap'] == pytest.approx(2.4e9)                     # scaled by 1200/1000
@@ -70,11 +70,11 @@ def add_annual(conn, item_id, currency, year_end, **values):
 
 
 def test_fundamentals_in_financial_currency(conn):
-    # Quoted in pence, reports in USD (like SHEL.L): valuation compares both in EUR.
+    # Quoted in pence, reports in USD (like SHEL.LSE): valuation compares both in EUR.
     dates = pd.bdate_range('2025-01-01', '2026-03-31')
-    i = add_item(conn, 'SHEL.L', 'GBp', market_cap=2e9, market_cap_date='2026-03-31')  # GBP
+    i = add_item(conn, 'SHEL.LSE', 'GBX', market_cap=2e9, market_cap_date='2026-03-31')  # GBP
     conn.execute("UPDATE item SET financial_currency = 'USD', forward_eps = 2.0, "
-                 "info_updated_at = '2026-03-31T18:00:00+00:00' WHERE item_id = ?", (i,))
+                 "forward_eps_date = '2026-03-31' WHERE item_id = ?", (i,))
     add_prices(conn, i, dates, [1000.0] * len(dates))                                   # 10 GBP
     conn.executemany('INSERT INTO fx_rate_daily VALUES (?, ?, ?)',
                      [(c, d.strftime('%Y-%m-%d'), r) for d in dates for c, r in (('GBP', 1.2), ('USD', 0.9))])
@@ -83,7 +83,7 @@ def test_fundamentals_in_financial_currency(conn):
                total_debt=8e8, cash_and_st_investments=2e8, interest_expense=0.0)
 
     calc_metrics(conn)
-    m = metrics(conn, 'SHEL.L')
+    m = metrics(conn, 'SHEL.LSE')
     mcap_eur = 2e9 * 1.2
     assert m['fiscal_year_end'] == '2025-12-31'
     assert m['ebit_margin'] == pytest.approx(0.2)
@@ -96,11 +96,14 @@ def test_fundamentals_in_financial_currency(conn):
     assert m['roic'] is None and m['roic_avg_4y'] is None and m['revenue_cagr_3y'] is None  # not enough data
     assert m['fcf_payout_ratio'] is None                                                   # dividends not reported
 
-    # Backdated: FY2025 is not public yet on 2026-02-27, forward EPS snapshot is too far away.
+    # Backdated: FY2025 is not public yet on 2026-02-27; the forward EPS snapshot (2026-03-31) is 32 days
+    # away, within the 100-day limit. On 2025-12-19 (102 days away) it is not used.
     calc_metrics(conn, asof='2026-02-27')
     old = dict(conn.execute("SELECT * FROM item_metrics WHERE asof_date = '2026-02-27'").fetchone())
     assert old['fiscal_year_end'] == '2024-12-31' and old['ebit_margin'] == pytest.approx(0.1)
-    assert old['pe_forward'] is None
+    assert old['pe_forward'] == pytest.approx(10 * 1.2 / (2.0 * 0.9))
+    calc_metrics(conn, asof='2025-12-19')
+    assert conn.execute("SELECT pe_forward FROM item_metrics WHERE asof_date = '2025-12-19'").fetchone()[0] is None
 
 
 def test_no_fundamentals_leaves_new_columns_null(conn):

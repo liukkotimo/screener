@@ -2,7 +2,7 @@
 name: steady_dividend
 show: [exchange]
 steps:
-  - {attr: type, op: ==, value: EQUITY}
+  - {attr: type, op: ==, value: Common Stock}
   - {attr: sector, op: not_in, value: [Energy, Basic Materials]}
   - {metric: market_cap_eur, op: ">=", value: 10000000000}
   - {metric: dividend_yield, op: ">=", value: 0.05}

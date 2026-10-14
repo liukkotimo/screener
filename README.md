@@ -1,6 +1,6 @@
 # screener
 
-Explainable screener for stocks, ETFs and funds on Yahoo Finance data, stored in a single SQLite file.
+Explainable screener for stocks, ETFs and funds on [EODHD](https://eodhd.com) data, stored in a single SQLite file.
 Design goal: for any item you can see exactly which data it has and at which screening step it was
 eliminated and why.
 
@@ -16,17 +16,33 @@ pip install -e .                   # provides the `screener` command (or use `py
 The database defaults to `data/screener.db` (override with `--db FILE` or `$SCREENER_DB`).
 The schema is created and migrated automatically.
 
+Market data comes from EODHD and needs your own API key (a plan with fundamentals, e.g. "All-In-One").
+Put it in the environment or in a `.env` file (`KEY=value` lines) in the directory you run screener from;
+variables already set in the shell take precedence:
+
+```bash
+EODHD_API_KEY=your-key
+```
+
+EODHD counts calls against a daily quota: price history, dividends, splits and symbol lists cost 1 call,
+fundamentals 10, a whole exchange's last-day bulk prices 100. Every update prints the calls it used,
+`screener status` shows today's total, and a run stops by itself before it would leave less than 1000 calls
+of the quota (re-run it the next day to continue).
+
 ## Building the universe
 
 ```bash
-screener import-tickers universe/test20.csv                  # one Yahoo ticker per line (first column)
-screener import-yahoo --region fi --region se --min-market-cap 5e8   # equities from the Yahoo screener
+screener import-tickers universe/test20.csv        # one EODHD symbol (CODE.EXCHANGE) per line, first column
+screener import-exchange HE ST --min-market-cap 5e8  # common stocks of Helsinki and Stockholm, >= 500 M EUR
 ```
 
-Existing tickers are never overwritten by an import.
+Existing tickers are never overwritten by an import. `import-exchange` takes EODHD exchange codes (`HE`
+Helsinki, `ST` Stockholm, `CO` Copenhagen, `OL` Oslo, `XETRA`, `LSE`, `US`, ...). It imports common stocks
+quoted in the exchange's currency, skips OTC lines and, using the exchange's last-day bulk prices, everything
+below the minimum market cap (in EUR, converted at the latest FX rate). It prints how many symbols were
+skipped and why. ETFs and funds can be added with `import-tickers`.
 
-Yahoo screener regions are listing regions: `de` also returns the Frankfurt, Stuttgart, ... lines of foreign
-companies and `us` the OTC lines, so one company can appear many times. After importing (and once
+A company can be listed on several exchanges (Nokia on `HE` and `ST`). After importing (and once
 `screener metrics` has run, for turnover), keep one listing per company:
 
 ```bash
@@ -35,35 +51,39 @@ screener dedupe --apply    # deactivate the others (active = 0, duplicate_of = t
 screener dedupe --reset    # reactivate everything deactivated as a duplicate
 ```
 
-Listings are grouped by type and exact name. The home-exchange listing is kept (e.g. `SAP.DE` over `SAP`),
-otherwise the most liquid one. Re-run it after an import; nothing is deleted.
+Listings are grouped by ISIN, or by type and exact name. The home-exchange listing is kept (the exchange of
+the ISIN's country, e.g. `NOKIA.HE` over `NOKIA.ST`), otherwise the most liquid one. Share classes with the same
+name (Volvo A and B) count as one company. Re-run it after an import; nothing is deleted.
 
 ## Updating data
 
 ```bash
-screener update items     # name, type, exchange, country, currency, sector, market cap ... (Yahoo info)
-screener update prices    # daily OHLC, close, adj_close, volume + dividends, incremental
-screener update fundamentals  # annual income statement, balance sheet, cash flow (equities only)
+screener update items     # name, type, exchange, currency, ISIN, market cap (101 calls per exchange)
+screener update prices    # daily OHLC, close, adj_close, volume + dividends, incremental (3 calls per item)
+screener update fundamentals  # statements, sector, industry, forward EPS (10 calls per stock/ETF)
 screener update fx        # daily EUR rates for every quote and reporting currency used by active items
 screener update all       # all of the above
 ```
 
 Options: `--tickers T1 T2` (items/prices/fundamentals), `--years 5` (history depth for new items),
-`--max-age-days 7` (item info older than this is refreshed), `--fundamentals-max-age-days 30`.
+`--fundamentals-max-age-days 90` (fundamentals older than this are refreshed).
 
-Fundamentals take three Yahoo calls per equity, so a first run over ~16 000 equities takes about 13 hours.
+`update items` reads each exchange's symbol list and last-day bulk prices, so it costs the same for one item
+as for all items of an exchange. Fundamentals cost 10 calls per item: ~1 000 stocks take ~10 000 calls.
 Like the other updates it can be interrupted and resumed; items fetched within the max age are skipped.
-To spread it over several days, use `--limit N` (e.g. `screener update fundamentals --limit 2000`, once a
-day): each run takes the never-fetched items first, largest market cap first, then the oldest.
+To spread it over several days, use `--limit N` (e.g. `screener update fundamentals --limit 2000`): each run
+takes the never-fetched items first, largest market cap first, then the oldest.
 Statements are stored per fiscal year in the company's reporting currency (`financial_currency`, which may
-differ from the quote currency) and never deleted.
+differ from the quote currency) and never deleted. Sector and industry are only known after this step.
 
 - Updates are incremental and resumable: work is committed per ticker/batch; an interrupted run just
   continues next time.
 - A failing ticker is logged and skipped. The latest outcome per ticker is kept in `fetch_log`.
-- Yahoo re-adjusts past prices after dividends and splits. Each update re-downloads a few overlapping days;
-  if they no longer match the stored ones, that item's full history is re-downloaded.
-- Prices and dividends are stored in the quote unit Yahoo uses (LSE in pence, `GBp`); `market_cap` is in the
+- EODHD gives raw prices plus an `adjusted_close` that it recomputes after every dividend and split. We store
+  `close` split-adjusted (computed from EODHD's split history) and `adj_close` as EODHD gives it. Each update
+  re-downloads a few overlapping days; if they no longer match the stored ones, that item's full history is
+  re-downloaded.
+- Prices and dividends are stored in the quote unit EODHD uses (LSE in pence, `GBX`); `market_cap` is in the
   major currency (GBP). FX rates are stored as EUR per unit of the major currency.
 
 ## Metrics
@@ -83,8 +103,8 @@ Rules that apply to every metric:
 - NULL always means "not computable" (short history, stale, missing FX or volume); it is never replaced by 0.
   A dividend yield of 0 means a full year of prices and no dividends.
 - `volatility_1y` needs at least 200 daily returns, `cvar_95` at least 500 (about two years of the 3-year window).
-- `market_cap` is Yahoo's snapshot scaled by the close price change from the snapshot date to as-of, so
-  backdated runs do not use today's market cap. Funds/ETFs usually have no market cap; use `total_assets_eur`.
+- `market_cap` is EODHD's snapshot scaled by the close price change from the snapshot date to as-of, so
+  backdated runs do not use today's market cap. ETFs have no market cap; use `total_assets_eur`.
 - `dividend_yield` uses the plain close (adj_close would inflate it).
 - Fundamental metrics use annual statements only; a fiscal year counts from 90 days after its end, and
   statements older than ~18 months give NULL. Valuation ratios convert statement figures and price/market cap
@@ -143,7 +163,7 @@ One-time setup (service account, no browser login needed afterwards):
 
 ```bash
 screener status            # row counts, latest dates, all fetch errors
-screener status SHEL.L     # one item: attributes, price range, dividends, last fetch outcomes
+screener status NOKIA.HE   # one item: attributes, price range, dividends, statements, last fetch outcomes
 ```
 
 ## Tests
@@ -154,9 +174,11 @@ venv/bin/pytest
 
 ## Data and disclaimer
 
-This project retrieves market data from Yahoo Finance. The data is not covered by this project's license
-and remains subject to Yahoo's terms of service. Yahoo's data is generally intended for personal use, so
-check their terms before using it for anything else.
+This project retrieves market data from EODHD with your own API key. The data is not covered by this
+project's license and remains subject to [EODHD's terms](https://eodhd.com/financial-apis/terms-conditions):
+for a non-professional subscription the data may be stored and analysed for private, non-commercial use, but
+not redistributed or shown to others in any form. Keep the database, exported Google Sheets and any raw
+responses to yourself, and don't share your API key.
 
 This software is for research and educational purposes only and is not financial advice.
 No data is included in this repository.

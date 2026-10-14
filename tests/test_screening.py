@@ -18,12 +18,12 @@ ASOF = '2026-03-31'
 def conn():
     c = db.connect(':memory:')
     items = [  # ticker, exchange, type, metrics (None = no metrics row)
-        ('AAA', 'HEL', 'EQUITY', {'perf_1y': -0.5, 'perf_3y': None, 'perf_3m': 0.01, 'market_cap_eur': 2e9}),
-        ('BBB', 'HEL', 'EQUITY', {'perf_1y': -0.1, 'perf_3y': None, 'perf_3m': 0.02, 'market_cap_eur': 5e9}),
-        ('CCC', 'STO', 'EQUITY', {'perf_1y': -0.1, 'perf_3y': -0.2, 'perf_3m': 0.30, 'market_cap_eur': 3e9}),
-        ('DDD', 'NYQ', 'ETF', None),
-        ('EEE', 'LSE', 'EQUITY', {'perf_1y': -0.9, 'perf_3y': -0.9, 'perf_3m': 0.0, 'market_cap_eur': 9e9}),
-        ('FFF', None, 'EQUITY', {'perf_1y': -0.9, 'perf_3y': -0.9, 'perf_3m': 0.0, 'market_cap_eur': 9e9}),
+        ('AAA', 'HE', 'Common Stock', {'perf_1y': -0.5, 'perf_3y': None, 'perf_3m': 0.01, 'market_cap_eur': 2e9}),
+        ('BBB', 'HE', 'Common Stock', {'perf_1y': -0.1, 'perf_3y': None, 'perf_3m': 0.02, 'market_cap_eur': 5e9}),
+        ('CCC', 'ST', 'Common Stock', {'perf_1y': -0.1, 'perf_3y': -0.2, 'perf_3m': 0.30, 'market_cap_eur': 3e9}),
+        ('DDD', 'US', 'ETF', None),
+        ('EEE', 'LSE', 'Common Stock', {'perf_1y': -0.9, 'perf_3y': -0.9, 'perf_3m': 0.0, 'market_cap_eur': 9e9}),
+        ('FFF', None, 'Common Stock', {'perf_1y': -0.9, 'perf_3y': -0.9, 'perf_3m': 0.0, 'market_cap_eur': 9e9}),
     ]
     for ticker, exchange, type_, m in items:
         cur = c.execute("INSERT INTO item (ticker, exchange, type, added_at) VALUES (?, ?, ?, 'x')",
@@ -44,7 +44,7 @@ def profile(conn, text):
 EXAMPLE = """
 name: example
 steps:
-  - {attr: exchange, op: in, value: [HEL, STO, NYQ]}
+  - {attr: exchange, op: in, value: [HE, ST, US]}
   - {metric: market_cap_eur, op: ">", value: 1000000000}
   - {metric: perf_3m, op: between, value: [-0.05, 0.05]}
   - any_of:
@@ -88,7 +88,7 @@ def test_sequential_steps_and_reasons(conn):
     run_id = run_screen(conn, profile(conn, EXAMPLE))
     s1 = outcomes(conn, run_id, 1)
     assert len(s1) == 6                                       # every active item is a step-1 candidate
-    assert s1['EEE'][:2] == (0, 'exchange = LSE, required in [HEL, STO, NYQ]')
+    assert s1['EEE'][:2] == (0, 'exchange = LSE, required in [HE, ST, US]')
     assert s1['FFF'][:2] == (0, 'missing data: exchange')
 
     s2 = outcomes(conn, run_id, 2)
@@ -115,7 +115,7 @@ steps:
       - {metric: perf_1y, op: "<", value: -0.6}
       - {metric: perf_3y, op: "<", value: -0.6}
   - all_of:
-      - {attr: type, op: "==", value: EQUITY}
+      - {attr: type, op: "==", value: Common Stock}
       - {metric: perf_3y, op: ">", value: 0}
 """)
     run_id = run_screen(conn, p)
@@ -135,7 +135,7 @@ def test_rerun_from_step_reuses_and_validates(conn):
     parent = conn.execute('SELECT parent_run_id, rerun_from_step FROM screen_run WHERE run_id = ?', (second,)).fetchone()
     assert tuple(parent) == (first, 4)
 
-    changed_first = EXAMPLE.replace('[HEL, STO, NYQ]', '[HEL]')
+    changed_first = EXAMPLE.replace('[HE, ST, US]', '[HE]')
     with pytest.raises(ValueError, match='step 1 differs'):
         run_screen(conn, profile(conn, changed_first), from_step=4)
     with pytest.raises(ValueError, match='as-of'):
@@ -181,12 +181,12 @@ def test_show_validation(conn):
 def test_survivor_table_puts_show_columns_first(conn):
     plain = survivor_table(conn, run_screen(conn, profile(conn, EXAMPLE)))
     assert plain[0] == ['ticker', 'name', 'exchange', 'market_cap_eur', 'perf_3m', 'perf_1y', 'perf_3y']
-    assert plain[1] == [['AAA', '', 'HEL', 2e9, 0.01, -0.5, None]]
+    assert plain[1] == [['AAA', '', 'HE', 2e9, 0.01, -0.5, None]]
 
     headers, rows = survivor_table(conn, run_screen(conn, profile(conn, SHOW)))
     # show columns (without ticker/name, deduplicated), then the remaining tested fields; no repeated columns
     assert headers == ['ticker', 'name', 'exchange', 'perf_1y', 'dividend_yield', 'market_cap_eur', 'perf_3m', 'perf_3y']
-    assert rows == [['AAA', '', 'HEL', -0.5, None, 2e9, 0.01, None]]
+    assert rows == [['AAA', '', 'HE', -0.5, None, 2e9, 0.01, None]]
 
 
 def test_survivors_text_uses_show_columns(conn):
@@ -209,12 +209,12 @@ def test_run_rows_layout(conn):
     assert rows[1] == []
     assert header_rows == [3, 10]
     assert rows[2] == ['step', 'in', 'out', 'condition']
-    assert rows[3] == [1, 6, 4, "exchange in [HEL, STO, NYQ]"]
+    assert rows[3] == [1, 6, 4, "exchange in [HE, ST, US]"]
     assert rows[4][:3] == [2, 4, 3]
     assert rows[6] == [4, 2, 1, '(perf_1y < -0.33 OR perf_3y < -0.33)']
     assert rows[7:9] == [[], ['1 survivors']]
     assert rows[9][:4] == ['ticker', 'name', 'exchange', 'perf_1y']
-    assert rows[10][:4] == ['AAA', '', 'HEL', -0.5]
+    assert rows[10][:4] == ['AAA', '', 'HE', -0.5]
     assert rows[10][4] == ''                      # NULL becomes an empty cell, never 0
 
 

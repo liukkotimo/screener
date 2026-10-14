@@ -14,7 +14,7 @@ from screener.analytics.returns import (days_since_low, drawdown_from_high, max_
                                         value_at, window)
 from screener.analytics.risk import cvar, volatility
 from screener.db import now_utc
-from screener.market_data.yahoo_finance import major_currency
+from screener.market_data.eodhd import major_currency
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,9 @@ METRICS = {
     'volatility_1y': 'annualized std. dev. of daily returns over 1 year (min 200 returns)',
     'cvar_95': 'avg of the worst 5% daily returns over 3 years, as positive loss (min 500 returns)',
     'price_eur': 'last close in EUR',
-    'market_cap': 'Yahoo market cap scaled to as-of by the close price change, major currency',
+    'market_cap': 'EODHD market cap (last-day bulk) scaled to as-of by the close price change, major currency',
     'market_cap_eur': 'market_cap in EUR at the as-of FX rate',
-    'total_assets_eur': 'fund/ETF total assets (Yahoo, latest) in EUR at the as-of FX rate',
+    'total_assets_eur': 'ETF total assets (EODHD, latest) in EUR at the as-of FX rate',
     'avg_value_traded_eur_3m': 'average daily close * volume over 3 months, in EUR (NULL if no volume data)',
     'dividend_yield': 'dividends (ex-date) over the last 12 months / close',
     'roic': 'EBIT * (1 - tax rate) / (equity + net debt), latest fiscal year',
@@ -45,7 +45,8 @@ METRICS = {
     'fcf_margin': 'free cash flow / revenue, latest fiscal year',
     'net_debt_ebitda': '(total debt - cash and short-term investments) / EBITDA (NULL if EBITDA <= 0)',
     'interest_coverage': 'EBIT / interest expense (999 = interest expense reported as 0)',
-    'pe_forward': 'price / Yahoo forward EPS (NULL if EPS <= 0 or the snapshot is > 31 days from as-of)',
+    'pe_forward': 'price / consensus EPS estimate for the next fiscal year (NULL if EPS <= 0 or the estimate '
+                  'was fetched > 100 days from as-of)',
     'ev_ebit': '(market cap + net debt) / EBIT (NULL if EBIT <= 0)',
     'fcf_yield': 'free cash flow / market cap',
     'fcf_payout_ratio': 'dividends paid / free cash flow (NULL if FCF <= 0)',
@@ -59,7 +60,7 @@ HISTORY_YEARS = 3  # longest metric window; prices older than this (plus a margi
 FUNDAMENTAL_METRICS = ('roic', 'roic_avg_4y', 'ebit_margin', 'ebit_margin_change_1y', 'revenue_cagr_3y', 'fcf_margin',
                        'net_debt_ebitda', 'interest_coverage', 'pe_forward', 'ev_ebit', 'fcf_yield',
                        'fcf_payout_ratio', 'fiscal_year_end')
-FORWARD_EPS_MAX_AGE_DAYS = 31  # forward_eps is a snapshot; not used for as-of dates further from it
+FORWARD_EPS_MAX_AGE_DAYS = 100  # forward_eps is a snapshot (refreshed with fundamentals, every 90 days by default)
 
 
 def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: pd.Series | None,
@@ -68,7 +69,7 @@ def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: 
     prices     DataFrame indexed by date with close, adj_close, volume (quote units, e.g. pence)
     dividends  Series indexed by ex-date (quote units)
     item       dict with currency, market_cap, market_cap_date, total_assets,
-               financial_currency, forward_eps, info_updated_at
+               financial_currency, forward_eps, forward_eps_date
     fx         EUR per unit of the item's major currency, indexed by date; None for EUR items
     annual     annual statements (fundamental_annual columns) indexed by fiscal year end, in the financial
                currency; None or empty if there are none
@@ -105,7 +106,7 @@ def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: 
     last_close = value_at(close, asof)
     m['price_eur'] = to_eur(last_close * unit_factor) if last_close is not None else None
 
-    # Yahoo's market cap is a snapshot from market_cap_date; scale it by the price change to as-of.
+    # The market cap is a snapshot from market_cap_date; scale it by the price change to as-of.
     market_cap = None
     if item.get('market_cap') and item.get('market_cap_date') and last_close is not None:
         close_then = value_at(close, item['market_cap_date'])
@@ -144,8 +145,8 @@ def fundamental_metrics(annual: pd.DataFrame | None, item: dict, fx_fin: pd.Seri
 
     m = {'pe_forward': None}
     eps = item.get('forward_eps')
-    snapshot = item.get('info_updated_at')
-    if eps and snapshot and abs((pd.Timestamp(asof) - pd.Timestamp(snapshot[:10])).days) <= FORWARD_EPS_MAX_AGE_DAYS:
+    snapshot = item.get('forward_eps_date')
+    if eps and snapshot and abs((pd.Timestamp(asof) - pd.Timestamp(snapshot)).days) <= FORWARD_EPS_MAX_AGE_DAYS:
         m['pe_forward'] = ratio(price_eur, fin_to_eur(eps))
 
     years = fa.usable_years(annual, asof) if annual is not None and not annual.empty else None
@@ -189,7 +190,7 @@ def calc_metrics(conn: sqlite3.Connection, asof: str | None = None, tickers: lis
     fx = load_fx(conn)
 
     sql = ('SELECT item_id, ticker, currency, market_cap, market_cap_date, total_assets, financial_currency, '
-           'forward_eps, info_updated_at FROM item WHERE ')
+           'forward_eps, forward_eps_date FROM item WHERE ')
     if tickers:
         items = conn.execute(sql + f'ticker IN ({",".join("?" * len(tickers))})', [t.upper() for t in tickers])
     else:

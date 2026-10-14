@@ -4,7 +4,7 @@ Screening profiles: YAML -> validated conditions.
     name: example
     description: optional text
     steps:
-      - {attr: exchange, op: in, value: [HEL, STO, NYQ]}
+      - {attr: exchange, op: in, value: [HE, ST, US]}
       - {metric: market_cap_eur, op: ">", value: 1000000000}
       - label: big fall within 1 or 3 years      # optional label on any step
         any_of:
@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 
 # item columns a profile may filter on
-ATTRIBUTES = ('ticker', 'name', 'type', 'exchange', 'exchange_name', 'country', 'currency', 'sector',
+ATTRIBUTES = ('ticker', 'name', 'type', 'exchange', 'exchange_name', 'country', 'currency', 'isin', 'sector',
               'industry', 'source')
 
 COMPARISONS = {'<': '<', '<=': '<=', '>': '>', '>=': '>=', '==': '=', '!=': '!='}

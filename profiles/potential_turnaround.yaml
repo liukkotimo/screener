@@ -7,7 +7,7 @@ steps:
   - label: equities only
     attr: type
     op: in
-    value: [EQUITY]
+    value: [Common Stock]
   - label: not too small
     metric: market_cap_eur
     op: ">="

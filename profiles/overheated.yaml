@@ -7,7 +7,7 @@ steps:
 - label: equities only
   attr: type
   op: ==
-  value: EQUITY
+  value: Common Stock
 - label: operating companies with comparable fundamentals
   attr: sector
   op: not_in

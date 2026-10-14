@@ -14,7 +14,7 @@ def run_rows(conn: sqlite3.Connection, run_id: int) -> tuple[list[list], list[in
         run 12  falling_knives  as of 2026-10-06  (created ...)
 
         step  in    out   condition
-        1     7620  7615  equities only: type == EQUITY
+        1     7620  7615  equities only: type == Common Stock
         ...
 
         3 survivors

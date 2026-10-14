@@ -30,7 +30,7 @@ FUNDAMENTALS_FILTER = ','.join([
 
 # EODHD statement field -> our fundamental_annual column, per statement section.
 # ebit and ebitda are not taken from EODHD's own fields (inconsistent, e.g. Nokia 2025 ebit < pretax income)
-# but derived in parse_annual like Yahoo did: ebit = pretax income + interest expense, ebitda = ebit + D&A.
+# but derived in parse_annual: ebit = pretax income + interest expense, ebitda = ebit + D&A.
 _STATEMENT_FIELDS = {
     'Financials::Income_Statement::yearly': {
         'totalRevenue': 'revenue', 'incomeBeforeTax': 'pretax_income', 'taxProvision': 'tax_provision',
@@ -99,7 +99,7 @@ def parse_history(eod: list[dict], dividends: list[dict], splits: list[dict],
     Daily history as a DataFrame indexed by date with HISTORY_COLUMNS, ascending.
 
     EODHD's open/high/low/close are RAW (not split-adjusted); here they are divided by the product of all
-    later split ratios, so 'close' is split-adjusted as it was with Yahoo. EODHD's volume is already
+    later split ratios, so 'close' is split-adjusted (dividend yields need that). EODHD's volume is already
     split-adjusted and kept as is. adj_close is EODHD's adjusted_close (splits and dividends). Dividends are EODHD's split-adjusted
     'value' per ex-date, converted to the quote unit (EODHD gives GBP while LSE prices are in GBX); ex-dates
     without a price row (e.g. announced future dividends) are dropped. split is the ratio on split days, else 0.

@@ -3,7 +3,7 @@ Fundamental metrics from annual financial statements.
 
 Functions take a DataFrame of annual figures indexed by fiscal year end (ascending; columns as in the
 fundamental_annual table, all in one currency) and return a float, or None when it cannot be computed.
-Pick the years known at an as-of date with usable_years() first. No database or Yahoo code here.
+Pick the years known at an as-of date with usable_years() first. No database or EODHD code here.
 """
 import math
 
