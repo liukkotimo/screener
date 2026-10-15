@@ -212,7 +212,9 @@ def _status_ticker(conn, ticker):
         print(f'{ticker}: not in database')
         return
     for k in item.keys():
-        print(f'{k:20} {item[k]}')
+        if k != 'duplicate_of':
+            print(f'{k:20} {item[k]}')
+    print(f'{"duplicates":20} {_duplicates(conn, item)}')
     p = conn.execute('SELECT COUNT(*), MIN(date), MAX(date) FROM price_daily WHERE item_id = ?',
                      (item['item_id'],)).fetchone()
     d = conn.execute('SELECT COUNT(*), MAX(ex_date) FROM dividend WHERE item_id = ?', (item['item_id'],)).fetchone()
@@ -230,6 +232,16 @@ def _status_ticker(conn, ticker):
     for f in conn.execute('SELECT * FROM fetch_log WHERE key = ? ORDER BY kind', (ticker,)):
         print(f'{"fetch " + f["kind"]:20} attempt {f["last_attempt_at"]}, success {f["last_success_at"]}'
               + (f', error: {f["last_error"]}' if f['last_error'] else ''))
+
+
+def _duplicates(conn, item) -> str:
+    """'is KEPT.HE' for a listing deactivated by dedupe, 'has A.ST, B.CO' for the kept one, else 'none'."""
+    if item['duplicate_of'] is not None:
+        kept = conn.execute('SELECT ticker FROM item WHERE item_id = ?', (item['duplicate_of'],)).fetchone()
+        return f'is {kept[0]}'
+    others = [r[0] for r in conn.execute('SELECT ticker FROM item WHERE duplicate_of = ? ORDER BY ticker',
+                                         (item['item_id'],))]
+    return f'has {", ".join(others)}' if others else 'none'
 
 
 def _fmt(v) -> str:

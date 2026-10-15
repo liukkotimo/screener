@@ -349,3 +349,20 @@ def test_items_lists_items_with_local_update_time(capsys, monkeypatch):
     assert capsys.readouterr().out.splitlines()[-1] == '1 item(s)'
     monkeypatch.delenv('TZ')
     time.tzset()
+
+
+def test_status_ticker_shows_duplicates_by_ticker(capsys):
+    from screener.cli import _status_ticker
+    c = db.connect(':memory:')
+    c.execute("INSERT INTO item (ticker, added_at) VALUES ('TIETO.HE', 'x')")
+    c.execute("INSERT INTO item (ticker, active, duplicate_of, added_at) VALUES ('TIEOS.ST', 0, 1, 'x')")
+    c.execute("INSERT INTO item (ticker, added_at) VALUES ('NOKIA.HE', 'x')")
+
+    def duplicates(ticker):
+        _status_ticker(c, ticker)
+        lines = capsys.readouterr().out.splitlines()
+        assert not any(line.startswith('duplicate_of') for line in lines)
+        return next(line for line in lines if line.startswith('duplicates')).split(maxsplit=1)[1]
+    assert duplicates('TIETO.HE') == 'has TIEOS.ST'
+    assert duplicates('TIEOS.ST') == 'is TIETO.HE'
+    assert duplicates('NOKIA.HE') == 'none'
