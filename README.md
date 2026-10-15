@@ -163,6 +163,8 @@ One-time setup (service account, no browser login needed afterwards):
 ```bash
 screener status            # row counts, latest dates, all fetch errors
 screener status NOKIA.HE   # one item: attributes, price range, dividends, statements, last fetch outcomes
+screener items             # every item: id, ticker, name, ISIN, type, source, active, last update (local time)
+screener items --active    # only active items
 ```
 
 ## Tests

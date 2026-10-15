@@ -153,6 +153,23 @@ def cmd_prune(conn, args):
     print(f'{prune_runs(conn, args.keep, args.run)} run(s) deleted')
 
 
+def cmd_items(conn, args):
+    rows = conn.execute('SELECT item_id, ticker, name, isin, type, source, active, info_updated_at, fundamentals_updated_at '
+                        'FROM item' + (' WHERE active = 1' if args.active else '') + ' ORDER BY item_id').fetchall()
+    print(f'{"id":>5} {"ticker":12} {"name":40} {"isin":12} {"type":15} {"source":15} active  updated at')
+    for r in rows:
+        stamps = [t for t in (r['info_updated_at'], r['fundamentals_updated_at']) if t]
+        print(f'{r["item_id"]:>5} {r["ticker"]:12} {(r["name"] or "")[:40]:40} {r["isin"] or "":12} {(r["type"] or "")[:15]:15} '
+              f'{(r["source"] or "")[:15]:15} {"yes" if r["active"] else "no":6}  {_local_time(max(stamps, default=None))}')
+    print(f'{len(rows)} item(s)')
+
+
+def _local_time(ts: str | None) -> str:
+    """ISO UTC timestamp -> 'dd.mm.yy hh:mm:ss' in local time; '' for None."""
+    from datetime import datetime
+    return datetime.fromisoformat(ts).astimezone().strftime('%d.%m.%y %H:%M:%S') if ts else ''
+
+
 def cmd_status(conn, args):
     if args.ticker:
         return _status_ticker(conn, args.ticker.upper())
@@ -305,6 +322,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument('--keep', type=int, default=10, help='keep the newest N runs per profile (default 10)')
     g.add_argument('--run', type=int, help='delete just this run')
     s.set_defaults(func=cmd_prune)
+
+    s = sub.add_parser('items', help='list the items in the database')
+    s.add_argument('--active', action='store_true', help='only active items')
+    s.set_defaults(func=cmd_items)
 
     s = sub.add_parser('status', help='data overview, or details of one ticker')
     s.add_argument('ticker', nargs='?')
