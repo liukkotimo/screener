@@ -326,3 +326,26 @@ def test_load_dotenv(tmp_path, monkeypatch):
     assert os.environ['SCREENER_SHEET'] == 'abc'
     assert os.environ['SCREENER_DB'] == 'x.db'
     assert os.environ['SCREENER_TEST_KEEP'] == 'old'
+
+
+def test_items_lists_items_with_local_update_time(capsys, monkeypatch):
+    import argparse
+    import time
+    from screener.cli import cmd_items
+    monkeypatch.setenv('TZ', 'Europe/Helsinki')
+    time.tzset()
+    c = db.connect(':memory:')
+    c.execute("INSERT INTO item (ticker, name, isin, type, source, added_at, info_updated_at, "
+              "fundamentals_updated_at) VALUES ('AAA.HE', 'Aaa Oyj', 'FI0000000001', 'Common Stock', 'eodhd:HE', 'x', "
+              "'2026-10-14T07:52:04+00:00', '2026-10-14T07:56:57+00:00')")
+    c.execute("INSERT INTO item (ticker, active, added_at) VALUES ('BBB.ST', 0, 'x')")
+    cmd_items(c, argparse.Namespace(active=False))
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].split() == ['1', 'AAA.HE', 'Aaa', 'Oyj', 'FI0000000001', 'Common', 'Stock', 'eodhd:HE', 'yes',
+                                '14.10.26', '10:56:57']             # newer of the two stamps, UTC+3
+    assert lines[2].split() == ['2', 'BBB.ST', 'no']                 # no update yet: blank, not an error
+    assert lines[-1] == '2 item(s)'
+    cmd_items(c, argparse.Namespace(active=True))
+    assert capsys.readouterr().out.splitlines()[-1] == '1 item(s)'
+    monkeypatch.delenv('TZ')
+    time.tzset()
