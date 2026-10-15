@@ -59,14 +59,20 @@ name (Volvo A and B) count as one company. Re-run it after an import; nothing is
 
 ```bash
 screener update items     # name, type, exchange, currency, ISIN, market cap (101 calls per exchange)
-screener update prices    # daily OHLC, close, adj_close, volume + dividends, incremental (3 calls per item)
+screener update prices    # daily OHLC, close, adj_close, volume + dividends and splits, incremental (3 calls per item)
 screener update fundamentals  # statements, sector, industry, forward EPS (10 calls per stock/ETF)
 screener update fx        # daily EUR rates for every quote and reporting currency used by active items
 screener update all       # all of the above
 ```
 
-Options: `--tickers T1 T2` (items/prices/fundamentals), `--years 5` (history depth for new items),
+Options: `--tickers T1 T2` (items/prices/fundamentals), `--years 15` (history depth for new items and
+currencies), `--full` (prices/fx: re-download the whole `--years` history of every selected item/currency,
+e.g. `screener update prices --years 15 --full` to extend a shorter history; 3 calls per item),
 `--fundamentals-max-age-days 90` (fundamentals older than this are refreshed).
+
+`update prices` also keeps the relative-strength benchmarks of `screener/benchmarks.yaml` (market index per
+exchange, MSCI World ETF) up to date; they are stored as inactive items (`source = benchmark`), so screens
+never include them.
 
 `update items` reads each exchange's symbol list and last-day bulk prices, so it costs the same for one item
 as for all items of an exchange. Fundamentals cost 10 calls per item: ~1 000 stocks take ~10 000 calls.
@@ -102,13 +108,19 @@ Rules that apply to every metric:
   Otherwise the metric is NULL. The same holds when the item's last price is more than 7 days before as-of.
 - NULL always means "not computable" (short history, stale, missing FX or volume); it is never replaced by 0.
   A dividend yield of 0 means a full year of prices and no dividends.
-- `volatility_1y` needs at least 200 daily returns, `cvar_95` at least 500 (about two years of the 3-year window).
+- Windows are calendar periods and must be fully covered by stored prices (`cagr_10y` needs 10 years).
+- `volatility_1y` needs at least 200 daily returns; `cvar_95` and the other 3-year risk metrics at least 500
+  (about two years of the 3-year window). The 200-day moving average needs 200 prices within a year.
+- Relative strength subtracts a benchmark's return over the same dates, in the item's currency
+  (benchmarks in `screener/benchmarks.yaml`). A missing benchmark gives NULL and is reported by `screener metrics`.
 - `market_cap` is EODHD's snapshot scaled by the close price change from the snapshot date to as-of, so
   backdated runs do not use today's market cap. ETFs have no market cap; use `total_assets_eur`.
 - `dividend_yield` uses the plain close (adj_close would inflate it).
 - Fundamental metrics use annual statements only; a fiscal year counts from 90 days after its end, and
   statements older than ~18 months give NULL. Valuation ratios convert statement figures and price/market cap
-  to EUR. Details: [profiles.md](doc/profiles.md).
+  to EUR. Multi-year fundamentals need consecutive fiscal years. Valuation history (`*_percentile_5y`,
+  `*_median_5y`) samples monthly, each sample from the price, statements and FX of its own date (approximately
+  point-in-time: EODHD has no filing dates). Details: [profiles.md](doc/profiles.md).
 
 The calculations live in `screener/analytics/` as plain functions on a pandas Series (no database code).
 

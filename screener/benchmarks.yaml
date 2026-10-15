@@ -1,0 +1,48 @@
+# Benchmarks for relative_strength_market_6m and relative_strength_world_6m.
+#
+# benchmarks: every benchmark series with its quote currency (needed for FX before any data is fetched).
+#   `screener update prices` adds missing ones as inactive items (source 'benchmark', never screened) and keeps
+#   their prices up to date like any item's. Prefer total-return (gross/net dividend) series; adj_close of an
+#   ETF includes its distributions, an accumulating ETF reinvests them.
+# market: EODHD exchange code (the ticker suffix) -> benchmark. Items on an exchange that is not listed get NULL.
+#   The listing exchange is used, never the currency.
+# world: one benchmark for every item.
+#
+# Checked against EODHD on 2026-10-15 (first daily price in brackets):
+#   OMXHGI.INDX   OMX Helsinki GI, gross (dividends reinvested), EUR      [2001-03]
+#   OMXSGI.INDX   OMX Stockholm GI, gross, SEK                           [2019-09]
+#   SP500TR.INDX  S&P 500 Total Return, USD                              [1995-01]
+#   SXXR.INDX     STOXX Europe 600 Net Return, EUR                       [1995-01]
+#   EUNL.XETRA    iShares Core MSCI World UCITS ETF (Acc), EUR quote; net of the 0.20 % fee, dividends
+#                 reinvested. EODHD has no MSCI World index series.                         [2009-10]
+# Also listed by EODHD but not checked: OMXCGI (Copenhagen GI, DKK), OSEAX (Oslo all share, NOK),
+#   TOPX (TOPIX, JPY, price index), KS11 (KOSPI, KRW, price index).
+
+benchmarks:
+  OMXHGI.INDX: {currency: EUR, name: OMX Helsinki GI}
+  OMXSGI.INDX: {currency: SEK, name: OMX Stockholm GI}
+  SP500TR.INDX: {currency: USD, name: S&P 500 Total Return}
+  SXXR.INDX: {currency: EUR, name: STOXX Europe 600 Net Return}
+  EUNL.XETRA: {currency: EUR, name: iShares Core MSCI World UCITS ETF (Acc), type: ETF}
+
+market:
+  HE: OMXHGI.INDX
+  ST: OMXSGI.INDX
+  US: SP500TR.INDX
+  # rest of Europe: STOXX Europe 600
+  XETRA: SXXR.INDX
+  F: SXXR.INDX
+  PA: SXXR.INDX
+  AS: SXXR.INDX
+  BR: SXXR.INDX
+  MC: SXXR.INDX
+  MI: SXXR.INDX
+  LSE: SXXR.INDX
+  SW: SXXR.INDX
+  VI: SXXR.INDX
+  LS: SXXR.INDX
+  IR: SXXR.INDX
+  CO: SXXR.INDX
+  OL: SXXR.INDX
+
+world: EUNL.XETRA

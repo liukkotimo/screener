@@ -37,14 +37,15 @@ _STATEMENT_FIELDS = {
         'interestExpense': 'interest_expense', 'netIncomeApplicableToCommonShares': 'net_income'},
     'Financials::Balance_Sheet::yearly': {
         'shortLongTermDebtTotal': 'total_debt', 'cashAndShortTermInvestments': 'cash_and_st_investments',
-        'totalStockholderEquity': 'stockholders_equity'},
+        'totalStockholderEquity': 'stockholders_equity', 'commonStockSharesOutstanding': 'shares_outstanding'},
     'Financials::Cash_Flow::yearly': {
         'totalCashFromOperatingActivities': 'operating_cash_flow', 'capitalExpenditures': 'capital_expenditure',
         'freeCashFlow': 'free_cash_flow', 'dividendsPaid': 'dividends_paid'},
 }
 FUNDAMENTAL_COLUMNS = ('revenue', 'ebit', 'ebitda', 'pretax_income', 'tax_provision', 'interest_expense',
                        'net_income', 'operating_cash_flow', 'capital_expenditure', 'free_cash_flow',
-                       'dividends_paid', 'total_debt', 'cash_and_st_investments', 'stockholders_equity')
+                       'dividends_paid', 'total_debt', 'cash_and_st_investments', 'stockholders_equity',
+                       'shares_outstanding')
 # Outflows stored as positive amounts (EODHD gives them positive today; abs() keeps it robust).
 _POSITIVE_COLUMNS = ('interest_expense', 'capital_expenditure', 'dividends_paid')
 

@@ -14,15 +14,16 @@ OVERLAP_DAYS = 5
 
 
 def needed_currencies(conn: sqlite3.Connection) -> list[str]:
-    """Major quote and financial-statement currencies of active items, EUR excluded (GBX -> GBP)."""
-    rows = conn.execute('SELECT currency FROM item WHERE active = 1 AND currency IS NOT NULL UNION '
-                        'SELECT financial_currency FROM item WHERE active = 1 AND financial_currency IS NOT NULL')
+    """Major quote and financial-statement currencies of active items and benchmarks, EUR excluded (GBX -> GBP)."""
+    rows = conn.execute("SELECT currency FROM item WHERE (active = 1 OR source = 'benchmark') AND currency IS NOT NULL "
+                        'UNION SELECT financial_currency FROM item WHERE active = 1 AND financial_currency IS NOT NULL')
     return sorted({major_currency(r[0])[0] for r in rows} - {'EUR'})
 
 
-def update_fx(conn: sqlite3.Connection, client, years: int = 5) -> dict:
+def update_fx(conn: sqlite3.Connection, client, years: int = 15, full: bool = False) -> dict:
+    """New currencies (all of them if full) get `years` of history, the others an incremental update."""
     currencies = needed_currencies(conn)
-    last = dict(conn.execute('SELECT currency, MAX(date) FROM fx_rate_daily GROUP BY currency').fetchall())
+    last = {} if full else dict(conn.execute('SELECT currency, MAX(date) FROM fx_rate_daily GROUP BY currency').fetchall())
     full_start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=years)).date()
     # Two groups: currencies without history get the full range, others re-fetch a short overlap.
     groups = {

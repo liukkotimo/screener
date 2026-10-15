@@ -99,8 +99,10 @@ Any column added to that table is automatically usable.
 
 Rules for all metrics:
 - **Fractions, not percent**: `-0.25` = −25 %, `0.05` = 5 %.
-- Returns, drawdowns and risk use `adj_close` (dividends and splits included). Returns are plain total
-  return over the window, **not annualized**.
+- Returns, drawdowns and risk use `adj_close` (dividends and splits included). `perf_*` are plain total
+  return over the window, **not annualized**; `cagr_*` and growth rates are annual.
+- Windows are calendar periods (`5y` = as-of minus 5 years), not counts of trading days. The whole window
+  must be covered by stored prices, so `cagr_10y` is NULL for an item with 6 years of history.
 - NULL = not computable (history too short, price older than 7 days at as-of, missing FX or volume).
   Never replaced by 0.
 - Money values are in EUR at the as-of FX rate.
@@ -114,6 +116,32 @@ Rules for all metrics:
 | `perf_6m` | total return over 6 months | |
 | `perf_1y` | total return over 1 year | −0.8 … 2 |
 | `perf_3y` | total return over 3 years (not annualized) | |
+| `perf_5y` | total return over 5 years (not annualized) | |
+| `cagr_5y` | annual growth rate over 5 years: `(1 + perf_5y) ** (1/5) − 1` | −0.2 … 0.3 |
+| `cagr_10y` | annual growth rate over 10 years (needs 10 years of prices) | |
+
+### Trend and relative strength
+
+| metric | definition | typical range |
+|---|---|---|
+| `ma_200_distance` | last price / 200-day moving average − 1 | −0.3 … 0.3 |
+| `ma_200_slope_3m` | 200-day moving average now / 3 months ago − 1 | −0.1 … 0.1 |
+| `relative_strength_market_6m` | `perf_6m` minus the home-market benchmark's return over the same dates | −0.3 … 0.3 |
+| `relative_strength_world_6m` | `perf_6m` minus the world benchmark's return (MSCI World ETF) | |
+
+The 200-day average is the mean of the last 200 stored prices; both averages of the slope need 200 full
+prices, within at most 366 calendar days (no large gaps).
+
+Relative strength is `stock return − benchmark return`: +15 % against +8 % gives `0.07`, −10 % against
+−20 % gives `0.10`. The benchmark is read on the item's own first and last window dates, and its return is
+converted into the item's currency (via EUR) when the currencies differ. Benchmarks are configured in
+`screener/benchmarks.yaml` (`$SCREENER_BENCHMARKS` for another file): the home market by the item's listing
+exchange (never by currency), plus one world benchmark. Total-return series are used where EODHD has them:
+OMX Helsinki GI, OMX Stockholm GI, S&P 500 TR, STOXX Europe 600 NR. EODHD has no MSCI World index, so the
+world benchmark is the iShares Core MSCI World UCITS ETF (Acc) on Xetra (`EUNL.XETRA`, EUR, dividends
+reinvested, net of its 0.20 % fee, since 2009). An exchange without a benchmark, or a benchmark without
+stored prices or FX, gives NULL (`screener metrics` lists the benchmarks it could not use). No other
+benchmark is substituted.
 
 ### Drawdown and timing
 
@@ -121,20 +149,32 @@ Rules for all metrics:
 |---|---|---|
 | `drawdown_52w` | last price vs. 52-week high: `last / max − 1` | ≤ 0 (0 = at the high) |
 | `drawdown_3y` | last price vs. 3-year high | ≤ 0 |
+| `drawdown_5y` | last price vs. 5-year high | ≤ 0 |
+| `drawdown_available_history` | last price vs. the high of all stored history (needs ≥ 1 year) | ≤ 0 |
 | `max_drawdown_3y` | worst peak-to-trough fall within 3 years | ≤ 0 |
+| `max_drawdown_5y` | worst peak-to-trough fall within 5 years | ≤ 0 |
+| `max_drawdown_10y` | worst peak-to-trough fall within 10 years | ≤ 0 |
 | `days_since_low_52w` | calendar days since the lowest price of the last 52 weeks | 0 (at the low now) … ~365 |
+| `days_since_low_3y` | calendar days since the lowest price of the last 3 years | 0 … ~1095 |
+| `recovery_from_low_3y` | last price vs. 3-year low: `last / min − 1` | ≥ 0 (0 = at the low) |
 
-`drawdown_*` is *where the price is now* relative to the high; `max_drawdown_3y` is the *worst fall that
-happened* in the window, even if fully recovered since.
+`drawdown_*` is *where the price is now* relative to the high; `max_drawdown_*` is the *worst fall that
+happened* in the window, even if fully recovered since. A stock that fell from 100 to 50 and then rose to a
+new high of 120 has `drawdown_5y = 0` and `max_drawdown_5y = -0.5`. `drawdown_available_history` depends on
+how much history is stored (`screener update prices --years N --full`), so compare it only between items
+with similar history.
 
 ### Risk
 
 | metric | definition | typical range |
 |---|---|---|
 | `volatility_1y` | annualized std. dev. of daily returns over 1 year (needs ≥ 200 returns) | 0.15 (calm) … 0.6+ (wild) |
+| `volatility_3y` | the same over 3 years (needs ≥ 500 returns) | |
+| `downside_volatility_3y` | `sqrt(mean(min(r, 0)²)) × sqrt(252)` over 3 years: only falls count, the mean is over all days (needs ≥ 500 returns) | 0.1 … 0.4 |
+| `ulcer_index_3y` | `sqrt(mean(drawdown²))`, each day's drawdown from the running high since the window start; deep *and* long falls raise it (needs ≥ 500 returns) | 0.02 (calm) … 0.3 |
 | `cvar_95` | average of the worst 5 % daily returns over 3 years, as a **positive** loss (needs ≥ 500 returns) | 0.03 … 0.10 |
 
-Note the sign: lower `cvar_95` = less tail risk, so filter with `<=`.
+Note the sign: lower `cvar_95` / `ulcer_index_3y` = less risk, so filter with `<=`.
 
 ### Size, liquidity, price
 
@@ -176,22 +216,78 @@ stocks only. Rules:
 | metric | definition | typical range |
 |---|---|---|
 | `roic` | EBIT × (1 − tax rate) / (equity + total debt − cash). Tax rate = tax / pretax income, limited to 0 … 0.4; 0 for a loss | 0.05 … 0.30 |
-| `roic_avg_4y` | mean `roic` of the latest 4 fiscal years; NULL unless all 4 are computable | |
+| `roic_avg_4y` | mean `roic` of the latest 4 consecutive fiscal years; NULL unless all 4 are computable | |
+| `roic_avg_10y` | mean `roic` of the latest 10 consecutive fiscal years (all 10 computable) | |
+| `roic_min_5y` | lowest `roic` of the latest 5 consecutive fiscal years | |
+| `roic_std_5y` | population std. dev. of `roic` over the latest 5 consecutive fiscal years; low = stable | 0 … 0.05 |
 | `ebit_margin` | EBIT / revenue | 0.05 … 0.30 |
 | `ebit_margin_change_1y` | `ebit_margin` minus the previous year's (`0.03` = +3 percentage points) | −0.05 … 0.05 |
+| `ebit_margin_avg_5y` | mean `ebit_margin` of the latest 5 consecutive fiscal years | |
+| `ebit_margin_trend_3y` | (`ebit_margin` − its value 3 fiscal years earlier) / 3: percentage points per year | −0.02 … 0.02 |
 | `revenue_cagr_3y` | annual revenue growth rate over 3 fiscal years | −0.1 … 0.3 |
+| `revenue_cagr_5y` | annual revenue growth rate over 5 fiscal years | |
+| `eps_cagr_5y` | annual growth rate of EPS (net income / year-end shares) over 5 fiscal years; NULL if either EPS ≤ 0 | |
+| `shares_outstanding_cagr_5y` | annual growth rate of year-end shares over 5 fiscal years; < 0 = buybacks, > 0 = dilution | −0.03 … 0.05 |
 | `fcf_margin` | free cash flow / revenue | |
+| `fcf_margin_avg_5y` | mean `fcf_margin` of the latest 5 consecutive fiscal years | |
+| `fcf_positive_years_10y` | how many of the latest 10 consecutive fiscal years had FCF > 0 (integer 0 … 10) | |
 | `net_debt_ebitda` | (total debt − cash and short-term investments) / EBITDA; negative = net cash | < 0 … 4 |
+| `net_debt_ebitda_max_5y` | highest `net_debt_ebitda` of the latest 5 consecutive fiscal years; NULL if EBITDA ≤ 0 in any of them | |
 | `interest_coverage` | EBIT / interest expense. **999** = interest expense reported as 0; NULL if not reported | 3 … 50 |
+| `interest_coverage_min_5y` | lowest `interest_coverage` of the latest 5 consecutive fiscal years (999 for a year without interest) | |
 | `pe_forward` | price / consensus EPS estimate for the next fiscal year (EODHD earnings trend `+1y`). NULL if EPS ≤ 0 or the as-of date is more than 100 days from when the estimate was fetched (it is a snapshot, refreshed with the fundamentals) | 8 … 40 |
 | `ev_ebit` | (market cap + net debt) / EBIT. Minority interests are ignored | 5 … 30 |
 | `fcf_yield` | free cash flow / market cap | 0 … 0.10 |
 | `fcf_payout_ratio` | dividends paid / free cash flow; NULL if FCF ≤ 0 or no dividend line reported | 0 … 1 |
 
+Multi-year rules: `*_5y` / `*_10y` averages, minimums, maximums and counts need that many **consecutive**
+fiscal years (year ends 9 … 15 months apart), every one of them computable; one missing year or one missing
+figure gives NULL, never a 0. Growth rates (`*_cagr_*`, `ebit_margin_trend_3y`) need only the two endpoint
+years, the earlier one ending 5 (or 3) years before the latest (± ~3 months); no CAGR from a value ≤ 0.
+
+Share counts are EODHD's year-end `commonStockSharesOutstanding`, which EODHD reports adjusted for the
+splits known when the fundamentals were fetched (checked on 20 companies with splits). A split stored by
+`update prices` after that fetch is applied by us. EODHD's history is not always consistent (Sampo has
+adjusted, unadjusted and early post-split years): when a year's count jumps from the year before by roughly
+the ratio of any later split, up or down, that year and all earlier ones are treated as unknown, so metrics
+that need them (`eps_cagr_5y`, `shares_outstanding_cagr_5y`, valuation history) are NULL. A count covering all
+share classes (Volvo A + B) is combined with the price of the listing screened.
+
 Tips: `pe_forward` is computed by us with both sides in EUR, so it also works when quote and reporting
 currency differ (e.g. GBX price / USD EPS). Companies that report interest expense as 0 get
 `interest_coverage` 999; when it is not reported at all, EBIT and everything built on it is NULL. Banks and insurers have no meaningful EBIT/EBITDA or net debt; exclude `Financial Services` when
 screening on these.
+
+### Valuation vs. own history
+
+| metric | definition | range |
+|---|---|---|
+| `ev_ebit_median_5y` | median EV/EBIT of the monthly samples of the last 5 years | |
+| `ev_ebit_percentile_5y` | share of those samples ≤ the current EV/EBIT | 0 … 1; **high = expensive** |
+| `fcf_yield_median_5y` | median FCF yield (FCF / market cap) of the samples | |
+| `fcf_yield_percentile_5y` | share of the samples ≤ the current FCF yield | 0 … 1; **high = cheap** |
+| `pe_percentile_5y` | share of the P/E samples ≤ the current P/E (trailing annual net income) | 0 … 1; high = expensive |
+| `ev_sales_percentile_5y` | share of the EV/Sales samples ≤ the current EV/Sales | 0 … 1; high = expensive |
+
+Percentile = `count(samples <= current) / count(samples)`: `ev_ebit_percentile_5y = 0.92` means today's
+EV/EBIT is at least as high as in 92 % of the past 5 years' samples. FCF yield runs the other way: a high
+yield (and percentile) is the cheap end. Filter cheap stocks with `ev_ebit_percentile_5y <= 0.3` or
+`fcf_yield_percentile_5y >= 0.7`.
+
+How the samples are made:
+- One sample per month: as-of minus 1, 2, … 60 months (60 samples). The current value is the same
+  calculation on the as-of date. Sampling monthly keeps single trading days from dominating.
+- Every sample uses only what was known on its date: the close of that day × the year-end share count of the
+  latest fiscal year public then (90 days after year end, at most ~18 months old), that year's net debt,
+  EBIT, revenue, net income and FCF, and the FX rates of that day. Today's statements are never combined with
+  old prices.
+- Meaningless values are left out: EV/EBIT and EV/Sales need EBIT / revenue > 0 and EV > 0, P/E needs net
+  income > 0. A negative FCF yield is kept (cash burn is information). Medians and percentiles need at least
+  36 valid samples and a valid current value, else NULL.
+- This is **approximately** point-in-time, not exact: EODHD has no filing dates (the 90-day lag is
+  assumed) and gives the statements as reported today, so restatements are mixed in; year-end share counts
+  miss buybacks during the year. The current value is computed the same way (statement share count × price),
+  so it can differ slightly from `ev_ebit` / `fcf_yield`, which use EODHD's market cap.
 
 ### Data quality
 

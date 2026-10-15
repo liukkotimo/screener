@@ -64,3 +64,31 @@ def max_drawdown(prices: pd.Series, asof, months: int) -> float | None:
     """Worst peak-to-trough decline within the window (0 or negative)."""
     w = window(prices, asof, months)
     return None if w is None else float((w / w.cummax() - 1).min())
+
+
+def cagr(prices: pd.Series, asof, months: int) -> float | None:
+    """Annual growth rate over the window: (last / first) ** (12 / months) - 1."""
+    w = window(prices, asof, months)
+    return None if w is None else float((w.iloc[-1] / w.iloc[0]) ** (12 / months) - 1)
+
+
+def recovery_from_low(prices: pd.Series, asof, months: int) -> float | None:
+    """Last price vs. the lowest price in the window: last / min - 1 (0 at the low, otherwise positive)."""
+    w = window(prices, asof, months)
+    return None if w is None else float(w.iloc[-1] / w.min() - 1)
+
+
+def drawdown_from_peak(prices: pd.Series, asof, min_months: int = 12,
+                       tolerance_days: int = TOLERANCE_DAYS) -> float | None:
+    """
+    Last price vs. the highest price of the whole history up to as-of: last / max - 1 (<= 0).
+    None if the last price is stale or the history covers less than min_months.
+    """
+    asof = pd.Timestamp(asof)
+    s = prices.dropna()
+    s = s[s.index <= asof]
+    if s.empty or (asof - s.index[-1]).days > tolerance_days or (s <= 0).any():
+        return None
+    if s.index[0] > asof - pd.DateOffset(months=min_months):
+        return None
+    return float(s.iloc[-1] / s.max() - 1)

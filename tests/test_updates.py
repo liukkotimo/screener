@@ -335,3 +335,32 @@ def test_import_exchange_adds_and_keeps_existing(conn):
     assert conn.execute("SELECT name FROM item WHERE ticker = 'BIG-B.ST'").fetchone()[0] == 'kept as is'
     with pytest.raises(SystemExit, match='unknown EODHD exchange'):
         import_exchange(conn, client, 'XX', 5e8)
+
+
+def test_update_prices_full_splits_and_benchmarks(conn, no_benchmarks):
+    no_benchmarks.write_text('benchmarks:\n  IDX.INDX: {currency: SEK, name: Index}\nmarket:\n  ST: IDX.INDX\n')
+    add_items(conn, [{'ticker': 'AAA.ST', 'currency': 'SEK'}], 'test')
+    dates = pd.bdate_range(end=date.today(), periods=30)
+    h = history(dates, [10.0] * 30)
+    h.loc[dates[10], 'split'] = 2.0
+    client = FakeEodhd({'AAA.ST': h, 'IDX.INDX': history(dates, [100.0] * 30)})
+
+    stats = update_prices(conn, client, years=15)
+    assert stats['ok'] == 2                                          # the benchmark was added and fetched
+    bench = conn.execute("SELECT active, source, currency, type FROM item WHERE ticker = 'IDX.INDX'").fetchone()
+    assert tuple(bench) == (0, 'benchmark', 'SEK', 'INDEX')
+    assert conn.execute('SELECT date, ratio FROM split').fetchall()[0][:] == (dates[10].strftime('%Y-%m-%d'), 2.0)
+    assert 'SEK' in needed_currencies(conn)
+
+    # --full re-downloads the whole history from `years` back, even when nothing changed
+    client.calls.clear()
+    update_prices(conn, client, tickers=['AAA.ST'], years=15, full=True)
+    assert client.calls[0][2] < (pd.Timestamp.today() - pd.DateOffset(years=14)).date()
+    assert conn.execute('SELECT COUNT(*) FROM split').fetchone()[0] == 1
+
+
+def test_parse_annual_reads_shares_outstanding():
+    from screener.market_data.eodhd import parse_annual
+    data = {'Financials::Balance_Sheet::yearly': {
+        '2025-12-31': {'date': '2025-12-31', 'currency_symbol': 'EUR', 'commonStockSharesOutstanding': '4881700000'}}}
+    assert parse_annual(data)['shares_outstanding'].iloc[0] == 4881700000.0
