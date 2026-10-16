@@ -27,7 +27,7 @@ ATTRIBUTES = ('ticker', 'name', 'type', 'exchange', 'exchange_name', 'country', 
 COMPARISONS = {'<': '<', '<=': '<=', '>': '>', '>=': '>=', '==': '=', '!=': '!='}
 OPERATORS = (*COMPARISONS, 'between', 'in', 'not_in')
 # metrics holding an ISO date text; <, >= etc. take a date string for these
-DATE_METRICS = ('last_price_date', 'fiscal_year_end')
+DATE_METRICS = ('last_price_date', 'fiscal_year_end', 'ttm_quarter_end')
 
 
 class ProfileError(ValueError):

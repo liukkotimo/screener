@@ -16,7 +16,8 @@ import pytest
 
 from screener.market_data import eodhd
 from screener.market_data.eodhd import (EodhdClient, EodhdError, QuotaExhausted, forward_eps, major_currency,
-                                        parse_annual, parse_history, parse_info, split_ratio)
+                                        parse_annual, parse_history, parse_info, parse_quarterly,
+                                        split_ratio)
 
 RAW = Path(__file__).parent / 'fixtures' / 'eodhd'
 
@@ -148,6 +149,27 @@ def test_parse_annual_without_interest_expense_has_no_ebit():
     y = parse_annual(STOCK).loc['2024-12-31']
     assert pd.isna(y['interest_expense']) and pd.isna(y['ebit']) and pd.isna(y['ebitda'])
     assert y['revenue'] == 900 and pd.isna(y['total_debt'])     # balance sheet year missing: NaN, not 0
+
+
+def test_parse_quarterly_reads_quarterly_sections_only():
+    data = {**STOCK,
+            'Financials::Income_Statement::quarterly': {
+                '2026-03-31': statement('2026-03-31', totalRevenue=260, incomeBeforeTax=25, interestExpense=3,
+                                        depreciationAndAmortization=12)},
+            'Financials::Balance_Sheet::quarterly': {
+                '2026-03-31': statement('2026-03-31', shortLongTermDebtTotal=280, cashAndShortTermInvestments=90)},
+            'Financials::Cash_Flow::quarterly': 'NA'}
+    q = parse_quarterly(data)
+    assert [d.strftime('%Y-%m-%d') for d in q.index] == ['2026-03-31']
+    y = q.iloc[0]
+    assert y['revenue'] == 260 and y['ebit'] == 28 and y['ebitda'] == 40 and y['total_debt'] == 280
+    assert pd.isna(y['free_cash_flow'])
+    assert list(parse_annual(data).index) == list(parse_annual(STOCK).index)       # yearly unaffected
+    assert parse_quarterly(STOCK).empty
+
+
+def test_fundamentals_filter_asks_for_quarterly_statements():
+    assert 'Financials::Cash_Flow::quarterly' in eodhd.FUNDAMENTALS_FILTER.split(',')
 
 
 def test_parse_annual_without_statements():

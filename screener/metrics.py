@@ -94,6 +94,20 @@ METRICS = {
                                'CHEAP vs. own history)',
     'pe_percentile_5y': 'share of the 5-year monthly P/E samples (net income > 0) <= the current P/E (0..1)',
     'ev_sales_percentile_5y': 'share of the 5-year monthly EV/Sales samples <= the current EV/Sales (0..1)',
+    'roic_ttm': 'roic of the trailing twelve months (TTM: sum of the latest 4 consecutive quarters; debt, cash and '
+                'equity of the latest quarter)',
+    'ebit_margin_ttm': 'EBIT / revenue, TTM',
+    'fcf_margin_ttm': 'free cash flow / revenue, TTM',
+    'net_debt_ebitda_ttm': 'net debt of the latest quarter / TTM EBITDA (NULL if EBITDA <= 0)',
+    'interest_coverage_ttm': 'TTM EBIT / TTM interest expense (999 = interest expense reported as 0)',
+    'ev_ebit_ttm': '(market cap + net debt of the latest quarter) / TTM EBIT (NULL if EBIT <= 0)',
+    'pe_ttm': 'market cap / TTM net income (NULL if net income <= 0)',
+    'fcf_yield_ttm': 'TTM free cash flow / market cap',
+    'revenue_growth_ttm': 'TTM revenue / TTM revenue a year earlier - 1 (8 consecutive quarters required)',
+    'eps_growth_ttm': 'TTM EPS (net income / quarter-end shares, split-adjusted) / TTM EPS a year earlier - 1 '
+                      '(NULL if either EPS <= 0)',
+    'ttm_quarter_end': 'end of the latest quarter in the TTM figures (public >= 60 days before as-of, at most ~8 '
+                       'months old)',
     'fiscal_year_end': 'end of the latest fiscal year used (public >= 90 days before as-of, at most ~18 months old)',
     'last_price_date': 'date of the last price on or before as-of',
     'n_obs': 'number of stored prices on or before as-of',
@@ -116,13 +130,17 @@ FUNDAMENTAL_METRICS = ('roic', 'roic_avg_4y', 'roic_avg_10y', 'roic_min_5y', 'ro
                        'fcf_margin_avg_5y', 'fcf_positive_years_10y', 'net_debt_ebitda', 'net_debt_ebitda_max_5y',
                        'interest_coverage', 'interest_coverage_min_5y', 'pe_forward', 'ev_ebit', 'fcf_yield',
                        'fcf_payout_ratio', 'fiscal_year_end', *VALUATION_HISTORY_METRICS)
+# metrics from quarterly statements, all NULL without 4 usable consecutive quarters
+TTM_METRICS = ('roic_ttm', 'ebit_margin_ttm', 'fcf_margin_ttm', 'net_debt_ebitda_ttm', 'interest_coverage_ttm',
+               'ev_ebit_ttm', 'pe_ttm', 'fcf_yield_ttm', 'revenue_growth_ttm', 'eps_growth_ttm', 'ttm_quarter_end')
 FORWARD_EPS_MAX_AGE_DAYS = 100  # forward_eps is a snapshot (refreshed with fundamentals, every 90 days by default)
 RS_MONTHS = 6
 
 
 def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: pd.Series | None,
                     asof, annual: pd.DataFrame | None = None, fx_fin: pd.Series | None = None,
-                    benchmarks: dict | None = None, splits: pd.Series | None = None) -> dict:
+                    benchmarks: dict | None = None, splits: pd.Series | None = None,
+                    quarterly: pd.DataFrame | None = None) -> dict:
     """
     prices     DataFrame indexed by date with close, adj_close, volume (quote units, e.g. pence), all history
     dividends  Series indexed by ex-date (quote units)
@@ -136,6 +154,8 @@ def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: 
     benchmarks {'market': ..., 'world': ...}: (adj_close, major currency, EUR per unit or None for EUR) of the
                item's benchmarks (load_benchmarks), or None where there is none
     splits     split ratios indexed by split date (empty or None if none)
+    quarterly  quarterly statements (fundamental_quarterly columns) indexed by quarter end, in the financial
+               currency; None or empty if there are none
     Returns {column: value} for item_metrics; None wherever a value cannot be computed.
     """
     asof = pd.Timestamp(asof)
@@ -202,6 +222,7 @@ def compute_metrics(prices: pd.DataFrame, dividends: pd.Series, item: dict, fx: 
 
     years = statement_years(annual, item, splits, asof)
     m.update(fundamental_metrics(years, item, fx_fin, asof, m['market_cap_eur'], m['price_eur']))
+    m.update(ttm_metrics(quarterly, item, splits, fx_fin, asof, m['market_cap_eur']))
     if years is not None:
         history = va.valuation_history(close * unit_factor, years, asof, 60, None if major == 'EUR' else fx,
                                        fx_fin_series(item, fx_fin))
@@ -230,7 +251,7 @@ def fx_fin_series(item: dict, fx_fin: pd.Series | None) -> pd.Series | None:
     fin = major_currency(item.get('financial_currency'))[0]
     if fin == 'EUR':
         return None
-    return fx_fin if fx_fin is not None else pd.Series(dtype=float)
+    return fx_fin if fx_fin is not None else pd.Series(dtype=float, index=pd.DatetimeIndex([]))
 
 
 def statement_years(annual: pd.DataFrame | None, item: dict, splits: pd.Series | None, asof) -> pd.DataFrame | None:
@@ -247,6 +268,26 @@ def statement_years(annual: pd.DataFrame | None, item: dict, splits: pd.Series |
     return years.assign(shares_outstanding=fa.shares_on_price_basis(years, splits, item.get('fundamentals_updated_at')))
 
 
+def eur_per_fin_unit(item: dict, fx_fin: pd.Series | None, asof) -> float | None:
+    """EUR per unit of the statement figures (financial currency, minor units resolved) at as-of; None if unknown."""
+    fin, fin_factor = major_currency(item.get('financial_currency'))
+    if fin is None:
+        return None
+    if fin == 'EUR':
+        return fin_factor
+    rate = value_at(fx_fin, asof) if fx_fin is not None else None
+    return None if rate is None else fin_factor * rate
+
+
+def to_eur_at(v: float | None, rate: float | None) -> float | None:
+    return None if v is None or rate is None else v * rate
+
+
+def positive_ratio(a: float | None, b: float | None) -> float | None:
+    """a / b; None if either is missing or b <= 0."""
+    return None if a is None or b is None or b <= 0 else a / b
+
+
 def fundamental_metrics(years: pd.DataFrame | None, item: dict, fx_fin: pd.Series | None, asof,
                         market_cap_eur: float | None, price_eur: float | None) -> dict:
     """
@@ -254,15 +295,10 @@ def fundamental_metrics(years: pd.DataFrame | None, item: dict, fx_fin: pd.Serie
     valuation compares statement figures with market cap / price, so both sides are converted to EUR at the
     as-of rate.
     """
-    fin, fin_factor = major_currency(item.get('financial_currency'))
-    eur_per_fin = None if fin is None else 1.0 if fin == 'EUR' else (
-        value_at(fx_fin, asof) if fx_fin is not None else None)
+    eur_per_fin = eur_per_fin_unit(item, fx_fin, asof)
 
     def fin_to_eur(v):
-        return None if v is None or eur_per_fin is None else v * fin_factor * eur_per_fin
-
-    def ratio(a, b):  # positive denominator required
-        return None if a is None or b is None or b <= 0 else a / b
+        return to_eur_at(v, eur_per_fin)
 
     def agg(func, values):
         return None if values is None else float(func(values))
@@ -271,7 +307,7 @@ def fundamental_metrics(years: pd.DataFrame | None, item: dict, fx_fin: pd.Serie
     eps = item.get('forward_eps')
     snapshot = item.get('forward_eps_date')
     if eps and snapshot and abs((pd.Timestamp(asof) - pd.Timestamp(snapshot)).days) <= FORWARD_EPS_MAX_AGE_DAYS:
-        m['pe_forward'] = ratio(price_eur, fin_to_eur(eps))
+        m['pe_forward'] = positive_ratio(price_eur, fin_to_eur(eps))
 
     if years is None:
         return {**dict.fromkeys(FUNDAMENTAL_METRICS), **m}
@@ -301,10 +337,41 @@ def fundamental_metrics(years: pd.DataFrame | None, item: dict, fx_fin: pd.Serie
         'net_debt_ebitda_max_5y': agg(max, fa.yearly_values(years, 5, fa.net_debt_ebitda)),
         'interest_coverage': fa.interest_coverage(last),
         'interest_coverage_min_5y': agg(min, fa.yearly_values(years, 5, fa.interest_coverage)),
-        'ev_ebit': ratio(ev, fin_to_eur(fa.num(last.get('ebit')))),
-        'fcf_yield': ratio(fin_to_eur(fa.num(last.get('free_cash_flow'))), market_cap_eur),
+        'ev_ebit': positive_ratio(ev, fin_to_eur(fa.num(last.get('ebit')))),
+        'fcf_yield': positive_ratio(fin_to_eur(fa.num(last.get('free_cash_flow'))), market_cap_eur),
         'fcf_payout_ratio': fa.fcf_payout_ratio(last),
         **dict.fromkeys(VALUATION_HISTORY_METRICS),
+    }
+
+
+def ttm_metrics(quarterly: pd.DataFrame | None, item: dict, splits: pd.Series | None, fx_fin: pd.Series | None,
+                asof, market_cap_eur: float | None) -> dict:
+    """
+    Trailing-twelve-month metrics (fundamentals.ttm) from the quarters public at as-of. Valuation compares the
+    TTM figures with the as-of market cap, both in EUR at the as-of rate. All None without a usable TTM row.
+    """
+    quarters = None if quarterly is None or quarterly.empty else fa.usable_quarters(quarterly, asof)
+    now = None if quarters is None else fa.ttm(quarters)
+    if now is None:
+        return dict.fromkeys(TTM_METRICS)
+    eur_per_fin = eur_per_fin_unit(item, fx_fin, asof)
+    nd = to_eur_at(fa.net_debt(now), eur_per_fin)
+    ev = None if market_cap_eur is None or nd is None else market_cap_eur + nd
+    splits = splits if splits is not None else pd.Series(dtype=float)
+    quarters = quarters.assign(
+        shares_outstanding=fa.shares_on_price_basis(quarters, splits, item.get('fundamentals_updated_at')))
+    return {
+        'ttm_quarter_end': now.name.strftime('%Y-%m-%d'),
+        'roic_ttm': fa.roic(now),
+        'ebit_margin_ttm': fa.ebit_margin(now),
+        'fcf_margin_ttm': fa.fcf_margin(now),
+        'net_debt_ebitda_ttm': fa.net_debt_ebitda(now),
+        'interest_coverage_ttm': fa.interest_coverage(now),
+        'ev_ebit_ttm': positive_ratio(ev, to_eur_at(fa.num(now.get('ebit')), eur_per_fin)),
+        'pe_ttm': positive_ratio(market_cap_eur, to_eur_at(fa.num(now.get('net_income')), eur_per_fin)),
+        'fcf_yield_ttm': positive_ratio(to_eur_at(fa.num(now.get('free_cash_flow')), eur_per_fin), market_cap_eur),
+        'revenue_growth_ttm': fa.ttm_growth(quarters, lambda y: fa.num(y.get('revenue'))),
+        'eps_growth_ttm': fa.ttm_growth(quarters, fa.eps),
     }
 
 
@@ -379,9 +446,13 @@ def calc_metrics(conn: sqlite3.Connection, asof: str | None = None, tickers: lis
         annual = pd.read_sql_query('SELECT * FROM fundamental_annual WHERE item_id = ? AND fiscal_year_end <= ? '
                                    'ORDER BY fiscal_year_end', conn, params=(item['item_id'], asof),
                                    parse_dates=['fiscal_year_end'], index_col='fiscal_year_end')
+        quarterly = pd.read_sql_query('SELECT * FROM fundamental_quarterly WHERE item_id = ? AND quarter_end <= ? '
+                                      'ORDER BY quarter_end', conn, params=(item['item_id'], asof),
+                                      parse_dates=['quarter_end'], index_col='quarter_end')
         item_bench = {'market': bench.get(bm.market_benchmark(item, config)), 'world': bench.get(config['world'])}
         m = compute_metrics(prices, divs, item, fx.get(major_currency(item['currency'])[0]), asof,
-                            annual, fx.get(major_currency(item['financial_currency'])[0]), item_bench, splits)
+                            annual, fx.get(major_currency(item['financial_currency'])[0]), item_bench, splits,
+                            quarterly)
         cols = {'item_id': item['item_id'], 'asof_date': asof, **m, 'calculated_at': now_utc()}
         conn.execute(f'INSERT OR REPLACE INTO item_metrics ({", ".join(cols)}) VALUES ({", ".join("?" * len(cols))})',
                      list(cols.values()))

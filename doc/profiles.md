@@ -47,7 +47,7 @@ meaningful at step level.
 
 | op | value | notes |
 |---|---|---|
-| `<` `<=` `>` `>=` | number | metrics need a number (except `last_price_date` and `fiscal_year_end`, which take an ISO date string) |
+| `<` `<=` `>` `>=` | number | metrics need a number (except `last_price_date`, `fiscal_year_end` and `ttm_quarter_end`, which take an ISO date string) |
 | `==` `!=` | number or text | |
 | `between` | `[low, high]` | inclusive, numbers, `low <= high` |
 | `in` / `not_in` | non-empty list | |
@@ -202,7 +202,7 @@ visible until the next ex-date.
 
 From EODHD's annual income statement, balance sheet and cash flow (`screener update fundamentals`), common
 stocks only. Rules:
-- Only **annual** figures (no trailing twelve months). The latest fiscal year used is the newest one that ended
+- Only **annual** figures here; the `*_ttm` metrics below use quarterly ones. The latest fiscal year used is the newest one that ended
   at least 90 days before as-of (assumed published by then); it is shown in `fiscal_year_end`. If that year is
   more than ~18 months old, all fundamental metrics are NULL.
 - Ratios within one statement need no currency conversion. Valuation metrics compare statement figures
@@ -258,6 +258,36 @@ currency differ (e.g. GBX price / USD EPS). Companies that report interest expen
 `interest_coverage` 999; when it is not reported at all, EBIT and everything built on it is NULL. Banks and insurers have no meaningful EBIT/EBITDA or net debt; exclude `Financial Services` when
 screening on these.
 
+### Fundamentals (trailing twelve months)
+
+From EODHD's quarterly statements (fetched in the same `screener update fundamentals` call). TTM = the latest
+4 consecutive quarters, so these are fresher than the annual metrics above, which can be up to ~15 months old.
+The annual metrics and the valuation history are not affected. Rules:
+- Flow figures (revenue, EBIT, EBITDA, net income, FCF, interest, tax, dividends) are **summed** over the 4
+  quarters; debt, cash, equity and shares come from the **latest** quarter. A figure missing in any of the 4
+  quarters gives NULL, never a partial sum.
+- A quarter counts from 60 days after its end; if the latest such quarter is more than ~8 months old, all
+  `*_ttm` metrics are NULL. Quarters must be consecutive (ends ~3 months apart).
+- Companies that report only half-yearly (e.g. Nestlé, LVMH, Unilever) have no 4 consecutive quarters: their
+  `*_ttm` metrics are NULL, the annual ones still work.
+- EODHD's quarters often miss a line the annual statement has, most often interest expense (Nokia, ASML).
+  Then EBIT, and everything built on it, is NULL in TTM while the annual metric has a value.
+- Ratios and EUR conversion as for the annual metrics.
+
+| metric | definition | typical range |
+|---|---|---|
+| `roic_ttm` | `roic` on TTM figures (equity and net debt of the latest quarter) | 0.05 … 0.30 |
+| `ebit_margin_ttm` | TTM EBIT / TTM revenue | 0.05 … 0.30 |
+| `fcf_margin_ttm` | TTM free cash flow / TTM revenue | |
+| `net_debt_ebitda_ttm` | net debt of the latest quarter / TTM EBITDA; NULL if EBITDA ≤ 0 | < 0 … 4 |
+| `interest_coverage_ttm` | TTM EBIT / TTM interest expense (999 = reported as 0) | 3 … 50 |
+| `ev_ebit_ttm` | (market cap + net debt of the latest quarter) / TTM EBIT; NULL if EBIT ≤ 0 | 5 … 30 |
+| `pe_ttm` | market cap / TTM net income; NULL if net income ≤ 0 | 8 … 40 |
+| `fcf_yield_ttm` | TTM free cash flow / market cap | 0 … 0.10 |
+| `revenue_growth_ttm` | TTM revenue / TTM revenue a year earlier − 1 (needs 8 consecutive quarters) | −0.1 … 0.3 |
+| `eps_growth_ttm` | TTM EPS / TTM EPS a year earlier − 1; EPS = net income / quarter-end shares (split-adjusted as above); NULL if either EPS ≤ 0 | |
+| `ttm_quarter_end` | end of the latest quarter in the TTM figures (ISO text, see Data quality) | |
+
 ### Valuation vs. own history
 
 | metric | definition | range |
@@ -296,6 +326,7 @@ How the samples are made:
 | `last_price_date` | date of the last price on or before as-of (ISO text, e.g. `"2026-09-30"`) |
 | `n_obs` | number of stored daily prices up to as-of |
 | `fiscal_year_end` | end of the latest fiscal year used by the fundamental metrics (ISO text); NULL = no usable statements |
+| `ttm_quarter_end` | end of the latest quarter used by the `*_ttm` metrics (ISO text); NULL = no 4 usable consecutive quarters |
 
 `n_obs >= 750` is roughly "at least 3 years of history".
 

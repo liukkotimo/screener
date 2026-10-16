@@ -1,9 +1,12 @@
 """
-Fundamental metrics from annual financial statements.
+Fundamental metrics from annual financial statements, and trailing twelve months (TTM) from quarterly ones.
 
 Functions take a DataFrame of annual figures indexed by fiscal year end (ascending; columns as in the
 fundamental_annual table, all in one currency) and return a float, or None when it cannot be computed.
 Pick the years known at an as-of date with usable_years() first. No database or EODHD code here.
+
+The single-year functions (roic, ebit_margin, ...) also take a TTM row: ttm() builds one from the latest four
+quarters (fundamental_quarterly columns), picked with usable_quarters().
 """
 import math
 import statistics
@@ -17,6 +20,13 @@ NO_INTEREST_COVERAGE = 999.0  # interest_coverage when interest expense is repor
 YEAR_STEP_DAYS = (270, 460)  # consecutive fiscal year ends are 9 .. 15 months apart (allows a year-end shift)
 ENDPOINT_TOLERANCE_DAYS = 92  # a growth rate's first year must end `years` before the latest, +- ~3 months
 SPLIT_CHECK_MIN_RATIO = 1.5  # splits at least this large (or 1/1.5) are checked against the share counts
+
+QUARTER_REPORT_LAG_DAYS = 60  # a quarter is assumed public this many days after it ends
+MAX_QUARTER_AGE_DAYS = 240    # ~8 months: an older latest quarter is too stale to use
+QUARTER_STEP_DAYS = (80, 100)  # consecutive quarter ends are about 3 months apart
+# summed over the four quarters of a TTM row; the other columns (balance sheet) are taken from the last quarter
+FLOW_COLUMNS = ('revenue', 'ebit', 'ebitda', 'pretax_income', 'tax_provision', 'interest_expense', 'net_income',
+                'operating_cash_flow', 'capital_expenditure', 'free_cash_flow', 'dividends_paid')
 
 
 def usable_years(annual: pd.DataFrame, asof) -> pd.DataFrame | None:
@@ -217,3 +227,55 @@ def shares_on_price_basis(annual: pd.DataFrame, splits: pd.Series, fetched) -> p
             if abs(math.log(ratio)) >= math.log(SPLIT_CHECK_MIN_RATIO) and abs(change - abs(math.log(ratio))) < change:
                 shares[shares.index <= d0] = float('nan')
     return shares
+
+
+# --- trailing twelve months from quarterly statements ----------------------------------------------------------
+
+def usable_quarters(quarterly: pd.DataFrame, asof) -> pd.DataFrame | None:
+    """
+    Quarters that were public at as-of: quarter end at least QUARTER_REPORT_LAG_DAYS before as-of.
+    None if there is none, or the latest is more than MAX_QUARTER_AGE_DAYS older than as-of.
+    """
+    asof = pd.Timestamp(asof)
+    q = quarterly[quarterly.index <= asof - pd.Timedelta(days=QUARTER_REPORT_LAG_DAYS)].sort_index()
+    if q.empty or (asof - q.index[-1]).days > MAX_QUARTER_AGE_DAYS:
+        return None
+    return q
+
+
+def consecutive_quarters(quarters: pd.DataFrame) -> bool:
+    """True if no quarter is missing between the first and the last (ends QUARTER_STEP_DAYS apart)."""
+    gaps = pd.Series(quarters.index).diff().dt.days.iloc[1:]
+    return bool(gaps.between(*QUARTER_STEP_DAYS).all())
+
+
+def ttm(quarters: pd.DataFrame, offset: int = 0) -> pd.Series | None:
+    """
+    Trailing twelve months: one year-like row from the four consecutive quarters ending `offset` quarters
+    before the latest (offset=4: the TTM a year earlier). FLOW_COLUMNS are summed (NaN if any quarter lacks the
+    figure, never a partial sum); the others come from the last of the four quarters. The row is named after
+    that quarter's end. None if there are not four consecutive quarters.
+    """
+    end = len(quarters) - offset
+    q = quarters.iloc[max(end - 4, 0):max(end, 0)]
+    if len(q) < 4 or not consecutive_quarters(q):
+        return None
+    row = q.iloc[-1].copy()
+    for c in FLOW_COLUMNS:
+        if c in q:
+            row[c] = pd.to_numeric(q[c], errors='coerce').sum(min_count=4)
+    return row
+
+
+def ttm_growth(quarters: pd.DataFrame, func) -> float | None:
+    """
+    Growth of func(TTM row) over the TTM a year earlier: now / before - 1 (needs 8 consecutive quarters).
+    None if either is missing or not positive (no growth rate from a loss).
+    """
+    if len(quarters) < 8 or not consecutive_quarters(quarters.iloc[-8:]):
+        return None
+    now, before = ttm(quarters), ttm(quarters, 4)
+    a, b = func(before), func(now)
+    if a is None or b is None or a <= 0 or b <= 0:
+        return None
+    return b / a - 1

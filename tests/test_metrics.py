@@ -79,6 +79,12 @@ def add_annual(conn, item_id, currency, year_end, **values):
                  [item_id, year_end, currency, *values.values()])
 
 
+def add_quarter(conn, item_id, currency, quarter_end, **values):
+    cols = ['item_id', 'quarter_end', 'currency', *values]
+    conn.execute(f'INSERT INTO fundamental_quarterly ({", ".join(cols)}) VALUES ({", ".join("?" * len(cols))})',
+                 [item_id, quarter_end, currency, *values.values()])
+
+
 def test_fundamentals_in_financial_currency(conn):
     # Quoted in pence, reports in USD (like SHEL.LSE): valuation compares both in EUR.
     dates = pd.bdate_range('2025-01-01', '2026-03-31')
@@ -190,3 +196,69 @@ def test_long_history_and_valuation_history(conn):
     calc_metrics(conn)
     assert metrics(conn, 'V.HE')['shares_outstanding_cagr_5y'] == pytest.approx(0.0)
     assert metrics(conn, 'V.HE')['ev_ebit_median_5y'] == pytest.approx(m['ev_ebit_median_5y'])
+
+
+def test_valuation_history_without_financial_currency_rates(conn):
+    # Reports in USD but no USD rates are stored: statement-based ratios stay NULL instead of crashing.
+    dates = pd.bdate_range('2020-03-31', '2026-03-31')
+    i = add_item(conn, 'U.HE', 'EUR', market_cap=22e6, market_cap_date='2026-03-31')
+    conn.execute("UPDATE item SET financial_currency = 'USD', fundamentals_updated_at = '2026-03-01T00:00:00+00:00' "
+                 'WHERE item_id = ?', (i,))
+    add_prices(conn, i, dates, [10.0] * len(dates))
+    for y in range(2015, 2026):
+        add_annual(conn, i, 'USD', f'{y}-12-31', revenue=4e6, ebit=1e6, net_income=8e5, free_cash_flow=5e5,
+                   total_debt=0.0, cash_and_st_investments=0.0, shares_outstanding=1e6)
+
+    assert calc_metrics(conn)['stored'] == 1
+    m = metrics(conn, 'U.HE')
+    assert m['ev_ebit_median_5y'] is None and m['pe_percentile_5y'] is None
+
+
+def test_ttm_metrics_from_quarterly_statements(conn):
+    dates = pd.bdate_range('2025-01-01', '2026-06-30')
+    i = add_item(conn, 'Q.HE', 'EUR', market_cap=2e9, market_cap_date='2026-06-30')
+    conn.execute("UPDATE item SET financial_currency = 'USD' WHERE item_id = ?", (i,))
+    add_prices(conn, i, dates, [10.0] * len(dates))
+    conn.executemany('INSERT INTO fx_rate_daily VALUES (?, ?, ?)',
+                     [('USD', d.strftime('%Y-%m-%d'), 0.9) for d in dates])
+    ends = ['2024-06-30', '2024-09-30', '2024-12-31', '2025-03-31', '2025-06-30', '2025-09-30', '2025-12-31',
+            '2026-03-31']
+    for n, end in enumerate(ends):
+        new = n >= 4
+        add_quarter(conn, i, 'USD', end, revenue=2.5e8 if new else 2e8, ebit=5e7, ebitda=6e7, pretax_income=5e7,
+                    tax_provision=1e7, interest_expense=5e6, net_income=4e7 if new else 2e7, free_cash_flow=3e7,
+                    total_debt=4e8, cash_and_st_investments=1e8, stockholders_equity=1.1e9, shares_outstanding=1e8)
+    add_annual(conn, i, 'USD', '2025-12-31', revenue=1e9, ebit=1e8)
+
+    calc_metrics(conn)
+    m = metrics(conn, 'Q.HE')
+    assert m['ttm_quarter_end'] == '2026-03-31'
+    assert m['ebit_margin_ttm'] == pytest.approx(2e8 / 1e9)
+    assert m['ebit_margin'] == pytest.approx(0.1)                       # annual metric unchanged
+    assert m['fcf_margin_ttm'] == pytest.approx(0.12)
+    assert m['roic_ttm'] == pytest.approx(2e8 * 0.8 / 1.4e9)
+    assert m['net_debt_ebitda_ttm'] == pytest.approx(3e8 / 2.4e8)
+    assert m['interest_coverage_ttm'] == pytest.approx(10.0)
+    assert m['ev_ebit_ttm'] == pytest.approx((2e9 + 3e8 * 0.9) / (2e8 * 0.9))
+    assert m['pe_ttm'] == pytest.approx(2e9 / (1.6e8 * 0.9))
+    assert m['fcf_yield_ttm'] == pytest.approx(1.2e8 * 0.9 / 2e9)
+    assert m['revenue_growth_ttm'] == pytest.approx(0.25)
+    assert m['eps_growth_ttm'] == pytest.approx(1.0)
+
+    # On 2026-05-15 Q1/2026 is not public yet: the TTM ends 2025-12-31 and growth lacks an 8th quarter.
+    calc_metrics(conn, asof='2026-05-15')
+    old = dict(conn.execute("SELECT * FROM item_metrics WHERE asof_date = '2026-05-15'").fetchone())
+    assert old['ttm_quarter_end'] == '2025-12-31' and old['revenue_growth_ttm'] is None
+
+
+def test_ttm_metrics_null_without_quarterly_statements(conn):
+    dates = pd.bdate_range('2025-01-01', '2026-06-30')
+    i = add_item(conn, 'A.HE', 'EUR', market_cap=1e9, market_cap_date='2026-06-30')
+    conn.execute("UPDATE item SET financial_currency = 'EUR' WHERE item_id = ?", (i,))
+    add_prices(conn, i, dates, [10.0] * len(dates))
+    add_annual(conn, i, 'EUR', '2025-12-31', revenue=1e9, ebit=1e8)
+    calc_metrics(conn)
+    m = metrics(conn, 'A.HE')
+    assert m['ebit_margin'] == pytest.approx(0.1)
+    assert all(m[c] is None for c in ('ttm_quarter_end', 'roic_ttm', 'ebit_margin_ttm', 'pe_ttm',
+                                      'revenue_growth_ttm', 'eps_growth_ttm'))

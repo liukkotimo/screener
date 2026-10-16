@@ -69,12 +69,15 @@ class FakeEodhd:
         return f or {'General': {'Code': symbol}, 'Financials::Income_Statement::yearly': 'NA'}
 
 
-def fundamentals(years: dict, currency='USD', **general) -> dict:
-    """Raw fundamentals response: years = {fiscal year end: {EODHD income statement field: value}}."""
-    return {'General': {'Type': 'Common Stock', **general},
-            'Financials::Income_Statement::yearly': {
-                d: {'date': d, 'currency_symbol': currency, **{k: str(v) for k, v in f.items()}}
-                for d, f in years.items()}}
+def fundamentals(years: dict, currency='USD', quarters: dict | None = None, **general) -> dict:
+    """
+    Raw fundamentals response: years (and quarters) = {period end: {EODHD income statement field: value}}.
+    """
+    def section(periods):
+        return {d: {'date': d, 'currency_symbol': currency, **{k: str(v) for k, v in f.items()}}
+                for d, f in periods.items()}
+    return {'General': {'Type': 'Common Stock', **general}, 'Financials::Income_Statement::yearly': section(years),
+            'Financials::Income_Statement::quarterly': section(quarters or {})}
 
 
 @pytest.fixture
@@ -177,10 +180,13 @@ def test_update_fundamentals_stores_keeps_old_years_and_logs(conn):
     client = FakeEodhd(fundamentals={
         'AAA': fundamentals({'2024-12-31': {'totalRevenue': 100},
                              '2025-12-31': {'totalRevenue': 110, 'incomeBeforeTax': 9, 'interestExpense': 2}},
+                            quarters={'2025-09-30': {'totalRevenue': 27}, '2025-12-31': {'totalRevenue': 30}},
                             Sector='Technology'),
         'ERR': 'raise'})
     stats = update_fundamentals(conn, client)
-    assert stats == {'selected': 3, 'ok': 1, 'failed': 2, 'years': 2}                # the fund is not fetched
+    assert stats == {'selected': 3, 'ok': 1, 'failed': 2, 'years': 2, 'quarters': 2}  # the fund is not fetched
+    assert [tuple(r) for r in conn.execute('SELECT quarter_end, revenue FROM fundamental_quarterly ORDER BY 1')] == \
+        [('2025-09-30', 27.0), ('2025-12-31', 30.0)]
     rows = conn.execute('SELECT fiscal_year_end, currency, revenue, ebit FROM fundamental_annual ORDER BY 1').fetchall()
     assert [tuple(r) for r in rows] == [('2024-12-31', 'USD', 100.0, None), ('2025-12-31', 'USD', 110.0, 11.0)]
     assert tuple(conn.execute("SELECT sector, financial_currency FROM item WHERE ticker = 'AAA'").fetchone()) == \
@@ -268,7 +274,8 @@ def test_update_fundamentals_etf_snapshot_and_quota(conn):
     client = FakeEodhd(fundamentals={'AAA.HE': stock, 'ETF1.HE': etf}, quota_calls=2)
 
     stats = update_fundamentals(conn, client)                        # largest first; BBB.HE hits the quota
-    assert stats == {'selected': 3, 'ok': 2, 'failed': 0, 'years': 1}  # an ETF without statements is fine
+    # an ETF without statements is fine, and so is a stock without quarterly statements
+    assert stats == {'selected': 3, 'ok': 2, 'failed': 0, 'years': 1, 'quarters': 0}
     assert conn.execute("SELECT fundamentals_updated_at FROM item WHERE ticker = 'BBB.HE'").fetchone()[0] is None
     assert conn.execute("SELECT total_assets FROM item WHERE ticker = 'ETF1.HE'").fetchone()[0] == 2.5e10
     row = conn.execute("SELECT forward_eps, forward_eps_period, forward_eps_date, industry, financial_currency "

@@ -1,6 +1,6 @@
 """
-Updating fundamentals from EODHD: one fundamentals request (10 calls) per item fills the annual statements
-(fundamental_annual) and the item's sector, industry, financial currency, ISIN and forward EPS.
+Updating fundamentals from EODHD: one fundamentals request (10 calls) per item fills the annual and quarterly
+statements (fundamental_annual, fundamental_quarterly) and the item's sector, industry, financial currency, ISIN and forward EPS.
 Common stocks and ETFs (for total assets) are fetched.
 """
 import json
@@ -11,7 +11,8 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 
 from screener.db import log_fetch, now_utc
-from screener.market_data.eodhd import FUNDAMENTAL_COLUMNS, QuotaExhausted, parse_annual, parse_info, raw_info
+from screener.market_data.eodhd import (FUNDAMENTAL_COLUMNS, QuotaExhausted, parse_annual, parse_info, parse_quarterly,
+                                         raw_info)
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +43,17 @@ def select_items(conn: sqlite3.Connection, tickers: list[str] | None, max_age_da
             LIMIT ?""", (*FETCH_TYPES, cutoff, -1 if limit is None else limit)).fetchall()
 
 
-def store_annual(conn: sqlite3.Connection, item_id: int, annual: pd.DataFrame) -> int:
-    """Insert or replace one row per fiscal year. Years EODHD no longer returns are kept."""
-    cols = ['item_id', 'fiscal_year_end', 'currency', *FUNDAMENTAL_COLUMNS]
+def store_statements(conn: sqlite3.Connection, item_id: int, statements: pd.DataFrame,
+                     table: str = 'fundamental_annual', key: str = 'fiscal_year_end') -> int:
+    """
+    Insert or replace one row per period (fiscal year, or quarter with table='fundamental_quarterly',
+    key='quarter_end'). Periods EODHD no longer returns are kept.
+    """
+    cols = ['item_id', key, 'currency', *FUNDAMENTAL_COLUMNS]
     rows = [[item_id, d.strftime('%Y-%m-%d'), None if pd.isna(row.get('currency')) else row['currency'],
              *(None if pd.isna(row.get(c)) else float(row[c]) for c in FUNDAMENTAL_COLUMNS)]
-            for d, row in annual.iterrows()]
-    conn.executemany(f'INSERT OR REPLACE INTO fundamental_annual ({", ".join(cols)}) '
+            for d, row in statements.iterrows()]
+    conn.executemany(f'INSERT OR REPLACE INTO {table} ({", ".join(cols)}) '
                      f'VALUES ({", ".join("?" * len(cols))})', rows)
     return len(rows)
 
@@ -68,7 +73,7 @@ def update_fundamentals(conn: sqlite3.Connection, client, tickers: list[str] | N
     """Fetch fundamentals for each selected item. Failures are logged per ticker; the run continues."""
     items = select_items(conn, tickers, max_age_days, limit)
     logger.info(f'update fundamentals: {len(items)} to fetch ({len(items) * 10} calls)')
-    ok = failed = consecutive = years = 0
+    ok = failed = consecutive = years = quarters = 0
     for n, item in enumerate(items, 1):
         try:
             data = client.get_fundamentals(item['ticker'])
@@ -96,11 +101,14 @@ def update_fundamentals(conn: sqlite3.Connection, client, tickers: list[str] | N
             continue
 
         consecutive = 0
-        years += store_annual(conn, item['item_id'], annual)
+        years += store_statements(conn, item['item_id'], annual)
+        # no quarterly statements (e.g. half-year reporters) is not an error: the TTM metrics are NULL
+        quarters += store_statements(conn, item['item_id'], parse_quarterly(data), 'fundamental_quarterly',
+                                     'quarter_end')
         store_info(conn, item['item_id'], parse_info(data), raw_info(data))
         log_fetch(conn, 'fundamentals', item['ticker'])
         conn.commit()
         ok += 1
         if n % 50 == 0:
             logger.info(f'update fundamentals: {n}/{len(items)}')
-    return {'selected': len(items), 'ok': ok, 'failed': failed, 'years': years}
+    return {'selected': len(items), 'ok': ok, 'failed': failed, 'years': years, 'quarters': quarters}

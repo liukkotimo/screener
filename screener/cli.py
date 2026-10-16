@@ -181,7 +181,9 @@ def cmd_status(conn, args):
           f'latest {q("SELECT MAX(date) FROM price_daily")}')
     print(f'dividends:  {q("SELECT COUNT(*) FROM dividend")} rows')
     print(f'statements: {q("SELECT COUNT(*) FROM fundamental_annual")} fiscal years, '
-          f'{q("SELECT COUNT(DISTINCT item_id) FROM fundamental_annual")} items')
+          f'{q("SELECT COUNT(DISTINCT item_id) FROM fundamental_annual")} items; '
+          f'{q("SELECT COUNT(*) FROM fundamental_quarterly")} quarters, '
+          f'{q("SELECT COUNT(DISTINCT item_id) FROM fundamental_quarterly")} items')
     print(f'fx:         {q("SELECT COUNT(DISTINCT currency) FROM fx_rate_daily")} currencies, '
           f'latest {q("SELECT MAX(date) FROM fx_rate_daily")}')
     errors = conn.execute('SELECT kind, key, last_attempt_at, last_error FROM fetch_log '
@@ -222,18 +224,23 @@ def _status_ticker(conn, ticker):
     print(f'{"dividends":20} {d[0]} rows, latest {d[1]}')
     splits = conn.execute('SELECT date, ratio FROM split WHERE item_id = ? ORDER BY date', (item['item_id'],)).fetchall()
     print(f'{"splits":20} ' + (', '.join(f'{r["date"]} x{r["ratio"]:g}' for r in splits) or 'none stored'))
-    annual = conn.execute('SELECT * FROM fundamental_annual WHERE item_id = ? ORDER BY fiscal_year_end',
-                          (item['item_id'],)).fetchall()
-    if annual:
-        n_years = len(annual)
-        annual = annual[-8:]
-        print(f'annual statements ({annual[-1]["currency"]}, latest {len(annual)} of {n_years} years):')
-        cols = [k for k in annual[0].keys() if k not in ('item_id', 'currency')]
-        for c in cols:
-            print(f'  {c:24}' + ''.join(f'{_fmt(r[c]):>12}' for r in annual))
+    _print_statements(conn, item['item_id'], 'annual', 'fundamental_annual', 'fiscal_year_end', 'years')
+    _print_statements(conn, item['item_id'], 'quarterly', 'fundamental_quarterly', 'quarter_end', 'quarters')
     for f in conn.execute('SELECT * FROM fetch_log WHERE key = ? ORDER BY kind', (ticker,)):
         print(f'{"fetch " + f["kind"]:20} attempt {f["last_attempt_at"]}, success {f["last_success_at"]}'
               + (f', error: {f["last_error"]}' if f['last_error'] else ''))
+
+
+def _print_statements(conn, item_id, title, table, key, unit):
+    """The latest 8 periods of a statements table, one line per column."""
+    rows = conn.execute(f'SELECT * FROM {table} WHERE item_id = ? ORDER BY {key}', (item_id,)).fetchall()
+    if not rows:
+        return
+    n = len(rows)
+    rows = rows[-8:]
+    print(f'{title} statements ({rows[-1]["currency"]}, latest {len(rows)} of {n} {unit}):')
+    for c in (k for k in rows[0].keys() if k not in ('item_id', 'currency')):
+        print(f'  {c:24}' + ''.join(f'{_fmt(r[c]):>12}' for r in rows))
 
 
 def _duplicates(conn, item) -> str:

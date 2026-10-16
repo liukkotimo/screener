@@ -79,8 +79,11 @@ as for all items of an exchange. Fundamentals cost 10 calls per item: ~1 000 sto
 Like the other updates it can be interrupted and resumed; items fetched within the max age are skipped.
 To spread it over several days, use `--limit N` (e.g. `screener update fundamentals --limit 2000`): each run
 takes the never-fetched items first, largest market cap first, then the oldest.
-Statements are stored per fiscal year in the company's reporting currency (`financial_currency`, which may
+Statements are stored per fiscal year and per quarter in the company's reporting currency (`financial_currency`, which may
 differ from the quote currency) and never deleted. Sector and industry are only known after this step.
+Items fetched before quarterly statements were added get them at their next refresh (after
+`--fundamentals-max-age-days`); to get them sooner, re-fetch with `--fundamentals-max-age-days 0 --limit N`
+(10 calls per item, spread over several days).
 
 - Updates are incremental and resumable: work is committed per ticker/batch; an interrupted run just
   continues next time.
@@ -116,8 +119,9 @@ Rules that apply to every metric:
 - `market_cap` is EODHD's snapshot scaled by the close price change from the snapshot date to as-of, so
   backdated runs do not use today's market cap. ETFs have no market cap; use `total_assets_eur`.
 - `dividend_yield` uses the plain close (adj_close would inflate it).
-- Fundamental metrics use annual statements only; a fiscal year counts from 90 days after its end, and
-  statements older than ~18 months give NULL. Valuation ratios convert statement figures and price/market cap
+- Fundamental metrics use annual statements; a fiscal year counts from 90 days after its end, and
+  statements older than ~18 months give NULL. The `*_ttm` metrics use the latest 4 quarters instead (a quarter
+  counts from 60 days after its end; NULL for half-year reporters). Valuation ratios convert statement figures and price/market cap
   to EUR. Multi-year fundamentals need consecutive fiscal years. Valuation history (`*_percentile_5y`,
   `*_median_5y`) samples monthly, each sample from the price, statements and FX of its own date (approximately
   point-in-time: EODHD has no filing dates). Details: [profiles.md](doc/profiles.md).
