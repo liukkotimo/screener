@@ -73,12 +73,12 @@ def cmd_update(conn, args):
         if 'items' in what:
             print('items:', update_items(conn, client, args.tickers))
         if 'prices' in what:
-            print('prices:', update_prices(conn, client, args.tickers, args.years))
+            print('prices:', update_prices(conn, client, args.tickers, args.years, args.full))
         if 'fundamentals' in what:
             print('fundamentals:', update_fundamentals(conn, client, args.tickers, args.fundamentals_max_age_days,
                                                        args.limit))
         if 'fx' in what:
-            print('fx:', update_fx(conn, client, args.years))
+            print('fx:', update_fx(conn, client, args.years, args.full))
     finally:
         print(f'EODHD calls used: {client.calls}')
 
@@ -87,7 +87,7 @@ def cmd_metrics(conn, args):
     from screener.metrics import METRICS, calc_metrics
     if args.list:
         for name, desc in METRICS.items():
-            print(f'{name:25} {desc}')
+            print(f'{name:28} {desc}')
         return
     print('metrics:', calc_metrics(conn, args.asof, args.tickers))
 
@@ -181,7 +181,9 @@ def cmd_status(conn, args):
           f'latest {q("SELECT MAX(date) FROM price_daily")}')
     print(f'dividends:  {q("SELECT COUNT(*) FROM dividend")} rows')
     print(f'statements: {q("SELECT COUNT(*) FROM fundamental_annual")} fiscal years, '
-          f'{q("SELECT COUNT(DISTINCT item_id) FROM fundamental_annual")} items')
+          f'{q("SELECT COUNT(DISTINCT item_id) FROM fundamental_annual")} items; '
+          f'{q("SELECT COUNT(*) FROM fundamental_quarterly")} quarters, '
+          f'{q("SELECT COUNT(DISTINCT item_id) FROM fundamental_quarterly")} items')
     print(f'fx:         {q("SELECT COUNT(DISTINCT currency) FROM fx_rate_daily")} currencies, '
           f'latest {q("SELECT MAX(date) FROM fx_rate_daily")}')
     errors = conn.execute('SELECT kind, key, last_attempt_at, last_error FROM fetch_log '
@@ -220,18 +222,25 @@ def _status_ticker(conn, ticker):
     d = conn.execute('SELECT COUNT(*), MAX(ex_date) FROM dividend WHERE item_id = ?', (item['item_id'],)).fetchone()
     print(f'{"prices":20} {p[0]} rows, {p[1]} .. {p[2]}')
     print(f'{"dividends":20} {d[0]} rows, latest {d[1]}')
-    annual = conn.execute('SELECT * FROM fundamental_annual WHERE item_id = ? ORDER BY fiscal_year_end',
-                          (item['item_id'],)).fetchall()
-    if annual:
-        n_years = len(annual)
-        annual = annual[-8:]
-        print(f'annual statements ({annual[-1]["currency"]}, latest {len(annual)} of {n_years} years):')
-        cols = [k for k in annual[0].keys() if k not in ('item_id', 'currency')]
-        for c in cols:
-            print(f'  {c:24}' + ''.join(f'{_fmt(r[c]):>12}' for r in annual))
+    splits = conn.execute('SELECT date, ratio FROM split WHERE item_id = ? ORDER BY date', (item['item_id'],)).fetchall()
+    print(f'{"splits":20} ' + (', '.join(f'{r["date"]} x{r["ratio"]:g}' for r in splits) or 'none stored'))
+    _print_statements(conn, item['item_id'], 'annual', 'fundamental_annual', 'fiscal_year_end', 'years')
+    _print_statements(conn, item['item_id'], 'quarterly', 'fundamental_quarterly', 'quarter_end', 'quarters')
     for f in conn.execute('SELECT * FROM fetch_log WHERE key = ? ORDER BY kind', (ticker,)):
         print(f'{"fetch " + f["kind"]:20} attempt {f["last_attempt_at"]}, success {f["last_success_at"]}'
               + (f', error: {f["last_error"]}' if f['last_error'] else ''))
+
+
+def _print_statements(conn, item_id, title, table, key, unit):
+    """The latest 8 periods of a statements table, one line per column."""
+    rows = conn.execute(f'SELECT * FROM {table} WHERE item_id = ? ORDER BY {key}', (item_id,)).fetchall()
+    if not rows:
+        return
+    n = len(rows)
+    rows = rows[-8:]
+    print(f'{title} statements ({rows[-1]["currency"]}, latest {len(rows)} of {n} {unit}):')
+    for c in (k for k in rows[0].keys() if k not in ('item_id', 'currency')):
+        print(f'  {c:24}' + ''.join(f'{_fmt(r[c]):>12}' for r in rows))
 
 
 def _duplicates(conn, item) -> str:
@@ -288,7 +297,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser('update', help='fetch data from EODHD')
     s.add_argument('what', choices=['items', 'prices', 'fundamentals', 'fx', 'all'])
     s.add_argument('--tickers', nargs='+', help='only these tickers (items/prices/fundamentals)')
-    s.add_argument('--years', type=int, default=5, help='history depth for new items/currencies (default 5)')
+    s.add_argument('--years', type=int, default=15, help='history depth for new items/currencies (default 15)')
+    s.add_argument('--full', action='store_true', help='prices/fx: re-download the whole history (--years deep) '
+                                                       'of every selected item/currency, e.g. to extend it')
     s.add_argument('--fundamentals-max-age-days', type=float, default=90,
                    help='refresh fundamentals older than this (default 90; 10 calls per item)')
     s.add_argument('--limit', type=int, help='fundamentals: fetch at most N items this run (never fetched first, '

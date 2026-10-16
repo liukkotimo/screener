@@ -164,3 +164,55 @@ def test_revenue_cagr_needs_years_apart():
     assert fa.revenue_cagr(a, 3) is None                                              # 48 months, not 36
     a.loc[pd.Timestamp('2025-12-31'), 'revenue'] = np.nan
     assert fa.ebit_margin_change(a) is None
+
+
+# --- trailing twelve months -----------------------------------------------------------------------------------
+
+QUARTER = {'revenue': 250.0, 'ebit': 25.0, 'ebitda': 37.5, 'pretax_income': 22.5, 'tax_provision': 4.5,
+           'interest_expense': 2.5, 'net_income': 18.0, 'free_cash_flow': 15.0, 'dividends_paid': 7.5,
+           'total_debt': 300.0, 'cash_and_st_investments': 100.0, 'stockholders_equity': 600.0,
+           'shares_outstanding': 10.0}
+
+
+def quarters(ends, **overrides) -> pd.DataFrame:
+    """QUARTER for each quarter end; overrides = {column: [value per quarter]}."""
+    rows = {e: {**QUARTER, **{c: v[i] for c, v in overrides.items()}} for i, e in enumerate(ends)}
+    return annual(rows)
+
+
+Q8 = ['2024-06-30', '2024-09-30', '2024-12-31', '2025-03-31', '2025-06-30', '2025-09-30', '2025-12-31', '2026-03-31']
+
+
+def test_ttm_sums_flows_and_takes_balance_sheet_from_latest_quarter():
+    q = quarters(Q8[-4:], total_debt=[1.0, 2.0, 3.0, 400.0], revenue=[250.0, 250.0, 250.0, 260.0])
+    t = fa.ttm(q)
+    assert t.name == pd.Timestamp('2026-03-31')
+    assert t['revenue'] == 1010.0 and t['ebit'] == 100.0 and t['free_cash_flow'] == 60.0
+    assert t['total_debt'] == 400.0 and t['stockholders_equity'] == 600.0
+    # a TTM row works with the single-year functions: same figures as YEAR in the annual tests
+    assert fa.roic(fa.ttm(quarters(Q8[-4:]))) == pytest.approx(fa.roic(pd.Series(YEAR)))
+
+
+def test_ttm_needs_four_consecutive_quarters_and_every_figure():
+    assert fa.ttm(quarters(Q8[-3:])) is None
+    assert fa.ttm(quarters(['2025-03-31', '2025-06-30', '2025-12-31', '2026-03-31'])) is None   # Q3 missing
+    assert fa.ttm(quarters(['2025-06-30', '2025-12-31', '2026-06-30', '2026-12-31'])) is None   # half-years
+    t = fa.ttm(quarters(Q8[-4:], ebit=[25.0, np.nan, 25.0, 25.0]))
+    assert pd.isna(t['ebit']) and fa.ebit_margin(t) is None                    # never a partial sum
+    assert fa.ttm(quarters(Q8), 4).name == pd.Timestamp('2025-03-31')
+
+
+def test_usable_quarters_respects_report_lag_and_staleness():
+    q = quarters(Q8)
+    assert fa.usable_quarters(q, '2026-05-15').index[-1] == pd.Timestamp('2025-12-31')  # Q1/2026 not public yet
+    assert fa.usable_quarters(q, '2026-06-01').index[-1] == pd.Timestamp('2026-03-31')
+    assert fa.usable_quarters(q, '2026-12-01') is None                                  # latest > 240 days old
+
+
+def test_ttm_growth_needs_eight_consecutive_quarters():
+    q = quarters(Q8, revenue=[200.0] * 4 + [250.0] * 4)
+    assert fa.ttm_growth(q, lambda y: fa.num(y.get('revenue'))) == pytest.approx(0.25)
+    assert fa.ttm_growth(q.iloc[1:], lambda y: fa.num(y.get('revenue'))) is None
+    assert fa.ttm_growth(q.drop(pd.Timestamp('2025-03-31')), lambda y: 1.0) is None     # gap in the middle
+    loss = quarters(Q8, net_income=[-5.0] * 4 + [18.0] * 4)
+    assert fa.ttm_growth(loss, fa.eps) is None                                          # no growth from a loss

@@ -4,7 +4,10 @@ Incremental update of daily prices and dividends, one item at a time (3 EODHD ca
 EODHD recomputes the whole adjusted_close history after every dividend and split, and our split-adjusted
 close changes after a split. Appending new days to an old, differently adjusted history would corrupt
 returns, so each incremental fetch re-downloads a few overlapping days. If a stored overlapping day no longer
-matches, the item's whole history is re-downloaded and replaced.
+matches, the item's whole history is re-downloaded and replaced. `full` re-downloads every selected item's
+history (e.g. to extend it with a larger `years`).
+
+Benchmarks (benchmarks.yaml) are added as inactive items and updated together with the active items.
 """
 import logging
 import math
@@ -13,6 +16,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
+from screener import benchmarks
 from screener.db import log_fetch
 from screener.market_data.eodhd import EodhdError, QuotaExhausted
 
@@ -33,7 +37,7 @@ def select_items(conn: sqlite3.Connection, tickers: list[str] | None) -> list[sq
     if tickers:
         return conn.execute(sql + f'i.ticker IN ({",".join("?" * len(tickers))})',
                             [t.upper() for t in tickers]).fetchall()
-    return conn.execute(sql + 'i.active = 1 ORDER BY i.ticker').fetchall()
+    return conn.execute(sql + 'i.active = 1 OR i.source = ? ORDER BY i.ticker', (benchmarks.SOURCE,)).fetchall()
 
 
 def history_mismatch(conn: sqlite3.Connection, item_id: int, df: pd.DataFrame, last_date: str) -> str | None:
@@ -59,10 +63,10 @@ def history_mismatch(conn: sqlite3.Connection, item_id: int, df: pd.DataFrame, l
 
 
 def store_history(conn: sqlite3.Connection, item_id: int, df: pd.DataFrame, replace_all: bool = False) -> int:
-    """Upsert price rows and non-zero dividends. replace_all deletes the item's old prices/dividends first."""
+    """Upsert price rows, non-zero dividends and splits. replace_all deletes the item's old ones first."""
     if replace_all:
-        conn.execute('DELETE FROM price_daily WHERE item_id = ?', (item_id,))
-        conn.execute('DELETE FROM dividend WHERE item_id = ?', (item_id,))
+        for table in ('price_daily', 'dividend', 'split'):
+            conn.execute(f'DELETE FROM {table} WHERE item_id = ?', (item_id,))
     rows = [(item_id, d.strftime('%Y-%m-%d'), _num(r.get('open')), _num(r.get('high')), _num(r.get('low')),
              _num(r['close']), _num(r.get('adj_close')), _num(r.get('volume')))
             for d, r in df.iterrows()]
@@ -71,6 +75,10 @@ def store_history(conn: sqlite3.Connection, item_id: int, df: pd.DataFrame, repl
         divs = df['dividend'].fillna(0)
         conn.executemany('INSERT OR REPLACE INTO dividend (item_id, ex_date, amount) VALUES (?, ?, ?)',
                          [(item_id, d.strftime('%Y-%m-%d'), float(a)) for d, a in divs[divs > 0].items()])
+    if 'split' in df.columns:
+        splits = df['split'].fillna(0)
+        conn.executemany('INSERT OR REPLACE INTO split (item_id, date, ratio) VALUES (?, ?, ?)',
+                         [(item_id, d.strftime('%Y-%m-%d'), float(r)) for d, r in splits[splits > 0].items()])
     return len(rows)
 
 
@@ -85,12 +93,15 @@ def _fetch(client, item, start: date) -> tuple[pd.DataFrame | None, str | None]:
     return (df, None) if not df.empty else (None, 'no price data returned')
 
 
-def update_prices(conn: sqlite3.Connection, client, tickers: list[str] | None = None, years: int = 5) -> dict:
+def update_prices(conn: sqlite3.Connection, client, tickers: list[str] | None = None, years: int = 15,
+                  full: bool = False) -> dict:
+    if not tickers:
+        benchmarks.ensure_items(conn, benchmarks.load_config())
     items = select_items(conn, tickers)
     full_start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=years)).date()
     stats = {'selected': len(items), 'ok': 0, 'failed': 0, 'refetched': 0, 'rows': 0}
-    new = sum(1 for r in items if r['last_date'] is None)
-    logger.info(f'update prices: {new} new (since {full_start}), {len(items) - new} incremental')
+    new = len(items) if full else sum(1 for r in items if r['last_date'] is None)
+    logger.info(f'update prices: {new} full (since {full_start}), {len(items) - new} incremental')
 
     def failed(item, error):
         stats['failed'] += 1
@@ -99,7 +110,7 @@ def update_prices(conn: sqlite3.Connection, client, tickers: list[str] | None = 
 
     try:
         for n, item in enumerate(items, 1):
-            replace_all = item['last_date'] is None
+            replace_all = full or item['last_date'] is None
             start = full_start if replace_all else date.fromisoformat(item['last_date']) - timedelta(days=OVERLAP_DAYS)
             df, error = _fetch(client, item, start)
             if not error and not replace_all:

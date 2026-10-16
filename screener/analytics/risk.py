@@ -34,3 +34,26 @@ def cvar(prices: pd.Series, asof, months: int = 36, level: float = 0.95, min_obs
         return None
     n_tail = max(1, int((1 - level) * len(r)))
     return float(-r.sort_values().iloc[:n_tail].mean())
+
+
+def downside_volatility(prices: pd.Series, asof, months: int = 36, min_obs: int = 500) -> float | None:
+    """
+    Annualized downside deviation with a 0 % threshold: sqrt(mean(min(r, 0) ** 2)) * sqrt(252).
+    The mean is over all daily returns; positive days count as 0.
+    """
+    r = daily_returns(prices, asof, months)
+    if r is None or len(r) < min_obs:
+        return None
+    return float(math.sqrt((r.clip(upper=0) ** 2).mean()) * math.sqrt(TRADING_DAYS))
+
+
+def ulcer_index(prices: pd.Series, asof, months: int = 36, min_obs: int = 500) -> float | None:
+    """
+    Ulcer Index: sqrt(mean(drawdown ** 2)), drawdown measured daily from the running high since the window
+    start. Deep and long drawdowns both raise it; 0.15 = 15 %.
+    """
+    w = window(prices, asof, months)
+    if w is None or len(w) - 1 < min_obs:
+        return None
+    dd = w / w.cummax() - 1
+    return float(math.sqrt((dd ** 2).mean()))

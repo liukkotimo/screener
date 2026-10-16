@@ -18,6 +18,8 @@ Usage and behaviour: README.md. Writing screening profiles: doc/profiles.md.
 - Adding a metric: a new `migrations/NNN_*.sql` adding the column, an entry in `METRICS` in `metrics.py`,
   the calculation in `compute_metrics` (pure helper in `analytics/`), a test, and a line in `doc/profiles.md`.
   Profiles pick up the new column automatically.
+- Changing benchmarks (relative strength): `screener/benchmarks.yaml`; which benchmark an item gets is decided in
+  `screener/benchmarks.py`, the calculation (`analytics/relative.py`) only sees two price series.
 - Adding a filterable item attribute: `ATTRIBUTES` in `screening/profile.py` (plus a migration if it is a new
   column), and `doc/profiles.md`.
 - Never edit an existing migration; add the next numbered file. (Exception, done once: when the data source

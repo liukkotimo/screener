@@ -14,4 +14,4 @@ screener = "screener.cli:main"
 include = ["screener*"]
 
 [tool.setuptools.package-data]
-screener = ["migrations/*.sql"]
+screener = ["migrations/*.sql", "benchmarks.yaml"]

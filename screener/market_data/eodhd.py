@@ -26,25 +26,28 @@ MINOR_UNITS = {'GBX': ('GBP', 0.01), 'GBp': ('GBP', 0.01), 'ILA': ('ILS', 0.01),
 # fundamentals sections fetched (the call costs 10 whatever the filter; the filter keeps the response small)
 FUNDAMENTALS_FILTER = ','.join([
     'General', 'Highlights', 'Valuation', 'SharesStats', 'ETF_Data::TotalAssets', 'Earnings::Trend',
-    'Financials::Income_Statement::yearly', 'Financials::Balance_Sheet::yearly', 'Financials::Cash_Flow::yearly'])
+    'Financials::Income_Statement::yearly', 'Financials::Balance_Sheet::yearly', 'Financials::Cash_Flow::yearly',
+    'Financials::Income_Statement::quarterly', 'Financials::Balance_Sheet::quarterly',
+    'Financials::Cash_Flow::quarterly'])
 
-# EODHD statement field -> our fundamental_annual column, per statement section.
+# EODHD statement field -> our fundamental_annual / fundamental_quarterly column, per statement.
 # ebit and ebitda are not taken from EODHD's own fields (inconsistent, e.g. Nokia 2025 ebit < pretax income)
-# but derived in parse_annual: ebit = pretax income + interest expense, ebitda = ebit + D&A.
+# but derived in parse_statements: ebit = pretax income + interest expense, ebitda = ebit + D&A.
 _STATEMENT_FIELDS = {
-    'Financials::Income_Statement::yearly': {
+    'Income_Statement': {
         'totalRevenue': 'revenue', 'incomeBeforeTax': 'pretax_income', 'taxProvision': 'tax_provision',
         'interestExpense': 'interest_expense', 'netIncomeApplicableToCommonShares': 'net_income'},
-    'Financials::Balance_Sheet::yearly': {
+    'Balance_Sheet': {
         'shortLongTermDebtTotal': 'total_debt', 'cashAndShortTermInvestments': 'cash_and_st_investments',
-        'totalStockholderEquity': 'stockholders_equity'},
-    'Financials::Cash_Flow::yearly': {
+        'totalStockholderEquity': 'stockholders_equity', 'commonStockSharesOutstanding': 'shares_outstanding'},
+    'Cash_Flow': {
         'totalCashFromOperatingActivities': 'operating_cash_flow', 'capitalExpenditures': 'capital_expenditure',
         'freeCashFlow': 'free_cash_flow', 'dividendsPaid': 'dividends_paid'},
 }
 FUNDAMENTAL_COLUMNS = ('revenue', 'ebit', 'ebitda', 'pretax_income', 'tax_provision', 'interest_expense',
                        'net_income', 'operating_cash_flow', 'capital_expenditure', 'free_cash_flow',
-                       'dividends_paid', 'total_debt', 'cash_and_st_investments', 'stockholders_equity')
+                       'dividends_paid', 'total_debt', 'cash_and_st_investments', 'stockholders_equity',
+                       'shares_outstanding')
 # Outflows stored as positive amounts (EODHD gives them positive today; abs() keeps it robust).
 _POSITIVE_COLUMNS = ('interest_expense', 'capital_expenditure', 'dividends_paid')
 
@@ -137,22 +140,22 @@ def parse_history(eod: list[dict], dividends: list[dict], splits: list[dict],
     return df[list(HISTORY_COLUMNS)]
 
 
-def parse_annual(data: dict) -> pd.DataFrame:
+def parse_statements(data: dict, period: str = 'yearly') -> pd.DataFrame:
     """
-    Annual statements from a fundamentals response, indexed by fiscal year end (ascending), with
-    FUNDAMENTAL_COLUMNS plus 'currency' (the statement currency of that year). NaN where not reported;
-    years without any figure are dropped. Empty DataFrame if there are no statements.
+    Annual ('yearly') or 'quarterly' statements from a fundamentals response, indexed by period end
+    (ascending), with FUNDAMENTAL_COLUMNS plus 'currency' (the statement currency of that period). NaN where
+    not reported; periods without any figure are dropped. Empty DataFrame if there are no statements.
     """
     years = {}
-    for section, fields in _STATEMENT_FIELDS.items():
-        for key, row in _section(data, section).items():
+    for statement, fields in _STATEMENT_FIELDS.items():
+        for key, row in _section(data, f'Financials::{statement}::{period}').items():
             if not isinstance(row, dict):
                 continue
             y = years.setdefault(row.get('date') or key, {'currency': None})
             y['currency'] = y['currency'] or row.get('currency_symbol')
             for field, col in fields.items():
                 y[col] = _num(row.get(field))
-            if section.startswith('Financials::Income_Statement'):
+            if statement == 'Income_Statement':
                 if y['net_income'] is None:
                     y['net_income'] = _num(row.get('netIncome'))
                 y['_dna'] = _num(row.get('depreciationAndAmortization'))
@@ -171,6 +174,16 @@ def parse_annual(data: dict) -> pd.DataFrame:
         df[c] = df[c].abs()
     df = df.drop(columns='_dna').dropna(how='all', subset=list(FUNDAMENTAL_COLUMNS))
     return df.sort_index()
+
+
+def parse_annual(data: dict) -> pd.DataFrame:
+    """Annual statements, see parse_statements."""
+    return parse_statements(data, 'yearly')
+
+
+def parse_quarterly(data: dict) -> pd.DataFrame:
+    """Quarterly statements, see parse_statements."""
+    return parse_statements(data, 'quarterly')
 
 
 def forward_eps(data: dict) -> tuple[float | None, str | None]:
@@ -331,7 +344,7 @@ class EodhdClient:
         return parse_history(eod, divs, splits, currency)
 
     def get_fundamentals(self, symbol: str) -> dict:
-        """Raw fundamentals response, filtered to FUNDAMENTALS_FILTER (10 calls). Parse with parse_info/annual."""
+        """Raw fundamentals response, filtered to FUNDAMENTALS_FILTER (10 calls). Parse with parse_info/annual/quarterly."""
         return self._get(f'fundamentals/{symbol}', filter=FUNDAMENTALS_FILTER)
 
     def get_fx_history(self, currencies: list[str], start: date) -> dict[str, pd.Series]:
