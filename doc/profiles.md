@@ -29,6 +29,9 @@ steps:                          # required, non-empty list
     any_of:                     # OR; all_of = AND. Groups can be nested.
       - {metric: perf_1y, op: "<=", value: -0.25}
       - {metric: perf_3y, op: "<=", value: -0.40}
+  - label: the 10 cheapest of those
+    metric: pe_forward
+    bottom: 10                  # ranking step: keep the 10 lowest (top: 10 = highest)
 ```
 
 No other top-level or step keys are allowed; unknown keys, attributes, metrics or operators are rejected
@@ -39,9 +42,10 @@ survivors list (`screen`, `show-run`, Google Sheet) then has these columns right
 followed by every other field that any step tested, so nothing a step looked at is hidden. Values are the
 item's current attributes and the metrics of the run's as-of date. It does not filter anything.
 
-A step is either a **condition** (exactly one of `attr` / `metric`, plus `op` and `value`) or a **group**
-(exactly one of `any_of` / `all_of` with a non-empty list of conditions or groups). `label` is only
-meaningful at step level.
+A step is either a **condition** (exactly one of `attr` / `metric`, plus `op` and `value`), a **group**
+(exactly one of `any_of` / `all_of` with a non-empty list of conditions or groups) or a **ranking step**
+(`metric` plus `top` or `bottom`, see [below](#ranking-steps-top--bottom)). `label` is only meaningful at
+step level.
 
 ## Operators
 
@@ -65,6 +69,33 @@ through. Items without a metrics row for the as-of date fail every metric step.
 
 Practical consequence: a condition on a metric that needs long history (e.g. `perf_3y`, `cvar_95`)
 silently removes young listings. If that is not intended, put it inside an `any_of` with an alternative.
+
+## Ranking steps (`top` / `bottom`)
+
+A ranking step keeps the n candidates with the highest (`top: n`) or lowest (`bottom: n`) value of one
+metric, e.g. "10 best dividend payers in Helsinki":
+
+```yaml
+steps:
+  - {attr: exchange, op: ==, value: HE}
+  - {attr: type, op: ==, value: Common Stock}
+  - label: 10 best dividend payers
+    metric: dividend_yield
+    top: 10
+```
+
+- `top` means highest value and `bottom` lowest, not "best": for `pe_forward`, `volatility_1y` or `cvar_95` the
+  best ones are `bottom`.
+- It ranks only **this step's candidates**, the survivors of the previous step. Filter with ordinary steps
+  first (exchange, type, size), then rank. A ranking step can also go in the middle ("top 50 by size, then
+  the cheap ones"); later steps only see its survivors.
+- **Ties are included**: items with the same value as the n-th one pass too, so there can be more than n.
+- Items without a value (NULL) are not ranked; they fail with `missing data: <metric>`.
+- The tested values include the rank (`dividend_yield_rank = 3`). An eliminated item reads e.g.
+  `rank 14 of 80 by dividend_yield (top 10 kept)`, where 80 is the number of candidates that have a value.
+- When the last step is a ranking step, the survivors list is ordered by rank instead of by ticker.
+- Only metrics can be ranked, and only as a whole step (not inside `any_of` / `all_of`). n is a positive
+  whole number.
 
 ## Attributes (`attr:`)
 
@@ -424,6 +455,35 @@ steps:
     metric: volatility_1y
     op: "<="
     value: 0.45
+```
+
+### Helsinki dividend top 10
+
+```yaml
+name: he_dividend_top10
+show: [sector, dividend_yield, fcf_payout_ratio]
+steps:
+  - {attr: exchange, op: ==, value: HE}
+  - {attr: type, op: ==, value: Common Stock}
+  - label: 10 highest dividend yields
+    metric: dividend_yield
+    top: 10
+```
+
+### 15 best performers of the last year, tradable only
+
+```yaml
+name: perf_top15
+steps:
+  - {attr: type, op: ==, value: Common Stock}
+  - {metric: market_cap_eur, op: ">=", value: 1000000000}
+  - label: tradable
+    metric: avg_value_traded_eur_3m
+    op: ">="
+    value: 1000000
+  - label: 15 best 1-year returns
+    metric: perf_1y
+    top: 15
 ```
 
 ### Low-risk large caps, US and Europe, with a short-history escape

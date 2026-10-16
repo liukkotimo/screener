@@ -6,13 +6,16 @@ Per candidate it returns the tested values, the result of every single condition
 Results follow SQL three-valued logic: a condition on a NULL value is unknown, unknown conditions in
 any_of/all_of only decide the outcome when the known ones do not, and an unknown step result fails
 the item with reason "missing data".
+
+A ranking step (top / bottom n by a metric) ranks the step's candidates with SQL RANK(): items tied with
+the n-th one pass too, and items without a value fail with "missing data".
 """
 import json
 import logging
 import sqlite3
 
 from screener.db import now_utc
-from screener.screening.profile import Group, Leaf, Profile, Step, format_value
+from screener.screening.profile import Group, Leaf, Profile, Rank, Step, format_value
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +31,53 @@ def latest_asof(conn: sqlite3.Connection) -> str | None:
     return conn.execute('SELECT MAX(asof_date) FROM item_metrics').fetchone()[0]
 
 
-def _leaf_reason(leaf: Leaf, value, result, has_metrics: bool, asof) -> str:
+def _leaf_reason(leaf: Leaf | Rank, value, result, has_metrics: bool, asof) -> str:
     if result is None:
         if leaf.source == 'metric' and not has_metrics:
             return f'missing data: {leaf.field} (no metrics row as of {asof})'
         return f'missing data: {leaf.field}'
     return f'{leaf.field} = {format_value(value)}, required {leaf.op} {format_value(leaf.value)}'
+
+
+def _candidates_where(step: Step, run_id: int) -> tuple[str, list]:
+    """SQL condition selecting a step's candidates: all active items, or the survivors of the previous step."""
+    if step.no == 1:
+        return 'i.active = 1', []
+    return ('i.item_id IN (SELECT item_id FROM screen_step_item WHERE run_id = ? AND step_no = ? AND passed = 1)',
+            [run_id, step.no - 1])
+
+
+def _store_step(conn: sqlite3.Connection, step: Step, run_id: int, rows: list) -> tuple[int, int]:
+    n_passed = sum(row[4] for row in rows)
+    conn.execute('INSERT INTO screen_step VALUES (?, ?, ?, ?, ?, ?)',
+                 (run_id, step.no, step.definition_json, step.describe(), len(rows), n_passed))
+    conn.executemany('INSERT INTO screen_step_item VALUES (?, ?, ?, ?, ?, ?)', rows)
+    return len(rows), n_passed
+
+
+def evaluate_rank_step(conn: sqlite3.Connection, step: Step, run_id: int, asof: str | None) -> tuple[int, int]:
+    """Keep the n candidates with the highest (top) or lowest (bottom) value; ties with the n-th pass too."""
+    rank = step.condition
+    col = f'm.{rank.field}'   # whitelisted name only
+    order = 'DESC' if rank.direction == 'top' else 'ASC'
+    where, where_params = _candidates_where(step, run_id)
+    sql = (f'SELECT i.item_id, m.item_id IS NOT NULL AS has_metrics, {col} AS value, '
+           f'CASE WHEN {col} IS NOT NULL THEN RANK() OVER (ORDER BY {col} IS NULL, {col} {order}) END AS rnk, '
+           f'COUNT({col}) OVER () AS n_ranked '
+           f'FROM item i LEFT JOIN item_metrics m ON m.item_id = i.item_id AND m.asof_date = ? '
+           f'WHERE {where}')
+    rows = []
+    for r in conn.execute(sql, [asof] + where_params):
+        passed = r['rnk'] is not None and r['rnk'] <= rank.n
+        if passed:
+            reason = None
+        elif r['rnk'] is None:
+            reason = _leaf_reason(rank, None, None, r['has_metrics'], asof)
+        else:
+            reason = f'rank {r["rnk"]} of {r["n_ranked"]} by {rank.field} ({rank.direction} {rank.n} kept)'
+        values = {rank.field: r['value'], f'{rank.field}_rank': r['rnk']}
+        rows.append((run_id, step.no, r['item_id'], json.dumps(values), 1 if passed else 0, reason))
+    return _store_step(conn, step, run_id, rows)
 
 
 def evaluate_step(conn: sqlite3.Connection, step: Step, run_id: int, asof: str | None) -> tuple[int, int]:
@@ -44,12 +88,7 @@ def evaluate_step(conn: sqlite3.Connection, step: Step, run_id: int, asof: str |
     leaf_sql = [leaf.sql() for leaf in leaves]
     result_sql, result_params = step.condition.sql()
 
-    if step.no == 1:
-        where, where_params = 'i.active = 1', []
-    else:
-        where = ('i.item_id IN (SELECT item_id FROM screen_step_item '
-                 'WHERE run_id = ? AND step_no = ? AND passed = 1)')
-        where_params = [run_id, step.no - 1]
+    where, where_params = _candidates_where(step, run_id)
 
     sql = (f'SELECT i.item_id, m.item_id IS NOT NULL AS has_metrics, '
            f'{", ".join(field_sql)}, {", ".join(s for s, _ in leaf_sql)}, {result_sql} AS result '
@@ -75,11 +114,7 @@ def evaluate_step(conn: sqlite3.Connection, step: Step, run_id: int, asof: str |
             reason = prefix + '; '.join(dict.fromkeys(reasons))
         rows.append((run_id, step.no, r['item_id'], json.dumps(value_by_field), 1 if result == 1 else 0, reason))
 
-    n_passed = sum(row[4] for row in rows)
-    conn.execute('INSERT INTO screen_step VALUES (?, ?, ?, ?, ?, ?)',
-                 (run_id, step.no, step.definition_json, step.describe(), len(rows), n_passed))
-    conn.executemany('INSERT INTO screen_step_item VALUES (?, ?, ?, ?, ?, ?)', rows)
-    return len(rows), n_passed
+    return _store_step(conn, step, run_id, rows)
 
 
 def find_run(conn: sqlite3.Connection, run: str | int | None = 'latest', name: str | None = None) -> sqlite3.Row | None:
@@ -138,7 +173,8 @@ def run_screen(conn: sqlite3.Connection, profile: Profile, asof: str | None = No
                      'FROM screen_step_item WHERE run_id = ? AND step_no < ?', (run_id, parent['run_id'], from_step))
 
     for step in profile.steps[from_step - 1:]:
-        n_in, n_passed = evaluate_step(conn, step, run_id, asof)
+        evaluate = evaluate_rank_step if isinstance(step.condition, Rank) else evaluate_step
+        n_in, n_passed = evaluate(conn, step, run_id, asof)
         logger.info(f'step {step.no}: {n_in} -> {n_passed}  {step.describe()}')
 
     n_start = conn.execute('SELECT n_in FROM screen_step WHERE run_id = ? AND step_no = 1', (run_id,)).fetchone()[0]

@@ -42,11 +42,20 @@ def _show_fields(conn: sqlite3.Connection, run) -> list[str]:
     return [f for f in show if f not in ('ticker', 'name')]
 
 
+def _rank_field(conn: sqlite3.Connection, run_id: int, step_no: int) -> str | None:
+    """The metric of a ranking step (top / bottom), None for other steps."""
+    row = conn.execute('SELECT definition_json FROM screen_step WHERE run_id = ? AND step_no = ?',
+                       (run_id, step_no)).fetchone()
+    definition = json.loads(row['definition_json']) if row else {}
+    return definition['metric'] if 'top' in definition or 'bottom' in definition else None
+
+
 def survivor_table(conn: sqlite3.Connection, run_id: int, name_width: int | None = None):
     """
     Survivors of the last step as (headers, rows): ticker, name, the profile's `show:` columns, then every
     other field tested in any step. `show:` values are current item attributes / metrics of the run's as-of
-    date; tested values are the ones stored when the run was made.
+    date; tested values are the ones stored when the run was made. Ordered by ticker, or by rank when the last
+    step is a ranking step.
     """
     run = conn.execute('SELECT * FROM screen_run WHERE run_id = ?', (run_id,)).fetchone()
     last = conn.execute('SELECT MAX(step_no) FROM screen_step WHERE run_id = ?', (run_id,)).fetchone()[0]
@@ -54,6 +63,9 @@ def survivor_table(conn: sqlite3.Connection, run_id: int, name_width: int | None
         'SELECT i.item_id, i.ticker, i.name FROM screen_step_item s JOIN item i USING (item_id) '
         'WHERE s.run_id = ? AND s.step_no = ? AND s.passed = 1 ORDER BY i.ticker', (run_id, last)).fetchall()
     tested = _merged_values(conn, run_id, [i['item_id'] for i in items])
+    rank_field = _rank_field(conn, run_id, last)
+    if rank_field:
+        items.sort(key=lambda i: tested[i['item_id']][f'{rank_field}_rank'])
     show = _show_fields(conn, run)
     tested_fields = [f for f in dict.fromkeys(f for v in tested.values() for f in v)
                      if f not in show and f not in ('ticker', 'name')]

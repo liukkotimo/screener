@@ -10,6 +10,7 @@ Screening profiles: YAML -> validated conditions.
         any_of:
           - {metric: perf_1y, op: "<", value: -0.33}
           - {metric: perf_3y, op: "<", value: -0.33}
+      - {metric: dividend_yield, top: 10}        # ranking step: keep the 10 highest (bottom: N = lowest)
     show: [sector, perf_1y, dividend_yield]      # optional: extra columns for the survivors
 
 Column names are checked against whitelists before any SQL is built; values only ever become SQL parameters.
@@ -83,9 +84,27 @@ class Group:
 
 
 @dataclass(frozen=True)
+class Rank:
+    """Ranking step: keep the n items with the highest (top) or lowest (bottom) value; ties included."""
+    field: str
+    direction: str   # 'top' or 'bottom'
+    n: int
+    source = 'metric'
+
+    def leaves(self):
+        return [self]
+
+    def to_dict(self):
+        return {'metric': self.field, self.direction: self.n}
+
+    def describe(self):
+        return f'{self.direction} {self.n} by {self.field}'
+
+
+@dataclass(frozen=True)
 class Step:
     no: int
-    condition: Leaf | Group
+    condition: Leaf | Group | Rank
     label: str | None = None
 
     @property
@@ -143,6 +162,8 @@ def _parse_condition(raw, where: str, metrics: set[str]):
         return Group(groups[0], tuple(_parse_condition(c, f'{where}.{groups[0]}[{i + 1}]', metrics)
                                       for i, c in enumerate(children)))
 
+    if 'top' in raw or 'bottom' in raw:
+        raise ProfileError(f'{where}: top / bottom is only allowed as a whole step, not inside any_of / all_of')
     sources = [k for k in ('attr', 'metric') if k in raw]
     if len(sources) != 1:
         raise ProfileError(f'{where}: needs exactly one of attr / metric / any_of / all_of')
@@ -170,6 +191,28 @@ def _parse_condition(raw, where: str, metrics: set[str]):
     return Leaf(source, field, op, tuple(value) if isinstance(value, list) else value)
 
 
+def _parse_rank(raw, where: str, metrics: set[str]) -> Rank:
+    directions = [k for k in ('top', 'bottom') if k in raw]
+    if len(directions) != 1:
+        raise ProfileError(f'{where}: a ranking step has exactly one of top / bottom')
+    extra = set(raw) - {'metric', directions[0], 'label'}
+    if extra or 'metric' not in raw:
+        raise ProfileError(f'{where}: a ranking step has only metric, {directions[0]} and an optional label'
+                           + (f', not {sorted(extra)}' if extra else ''))
+    field, n = raw['metric'], raw[directions[0]]
+    if field not in metrics:
+        raise ProfileError(f'{where}: unknown metric {field!r}. Known: {", ".join(sorted(metrics))}')
+    if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+        raise ProfileError(f'{where}: {directions[0]} needs a positive whole number, got {n!r}')
+    return Rank(field, directions[0], n)
+
+
+def _parse_step(raw, where: str, metrics: set[str]):
+    if isinstance(raw, dict) and ('top' in raw or 'bottom' in raw):
+        return _parse_rank(raw, where, metrics)
+    return _parse_condition(raw, where, metrics)
+
+
 def _parse_show(raw, metrics: set[str]) -> tuple:
     if raw is None:
         return ()
@@ -194,7 +237,7 @@ def parse_profile(text: str, metrics: set[str], path: str | None = None) -> Prof
     extra = set(raw) - {'name', 'description', 'steps', 'show'}
     if extra:
         raise ProfileError(f'unknown top-level key(s) {sorted(extra)}')
-    steps = tuple(Step(i, _parse_condition(s, f'step {i}', metrics), s.get('label') if isinstance(s, dict) else None)
+    steps = tuple(Step(i, _parse_step(s, f'step {i}', metrics), s.get('label') if isinstance(s, dict) else None)
                   for i, s in enumerate(raw['steps'], 1))
     return Profile(str(raw['name']), steps, text, path, raw.get('description'), _parse_show(raw.get('show'), metrics))
 

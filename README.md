@@ -131,7 +131,8 @@ The calculations live in `screener/analytics/` as plain functions on a pandas Se
 ## Screening
 
 A profile is a YAML file with strictly sequential steps; each step only sees the survivors of the previous
-one (step 1: all active items). Profiles are your own files: keep them in `profiles/`, which is gitignored so
+one (step 1: all active items). A step is a condition (`perf_1y <= -0.25`) or a ranking (`top: 10` /
+`bottom: 10` by a metric, e.g. the 10 best dividend payers of the items left). Profiles are your own files: keep them in `profiles/`, which is gitignored so
 they stay private. [profiles.md](doc/profiles.md) explains the format, attributes and metrics, and has
 [complete examples](doc/profiles.md#examples) to copy as a starting point.
 

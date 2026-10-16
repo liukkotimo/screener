@@ -71,6 +71,15 @@ def outcomes(conn, run_id, step_no):
     ('{metric: perf_1y, attr: type, op: "<", value: 1}', 'exactly one of'),
     ('{metric: perf_1y, op: "<", value: 1, colour: red}', 'unknown key'),
     ('{any_of: []}', 'non-empty list'),
+    ('{metric: perf_1y, top: 0}', 'top needs a positive whole number'),
+    ('{metric: perf_1y, bottom: -1}', 'bottom needs a positive whole number'),
+    ('{metric: perf_1y, top: 1.5}', 'top needs a positive whole number'),
+    ('{metric: perf_1y, top: true}', 'top needs a positive whole number'),
+    ('{metric: perf_1y, top: 1, bottom: 1}', 'exactly one of top / bottom'),
+    ('{metric: perf_1y, top: 1, op: ">", value: 0}', 'only metric, top'),
+    ('{attr: exchange, top: 1}', 'only metric, top'),
+    ('{metric: perf_2y, top: 1}', "unknown metric 'perf_2y'"),
+    ('{any_of: [{metric: perf_1y, top: 1}]}', 'only allowed as a whole step'),
 ])
 def test_profile_validation_errors(conn, step, message):
     with pytest.raises(ProfileError, match=message):
@@ -154,6 +163,52 @@ def test_explain(conn):
     assert 'not in the database' in explain(conn, 'ZZZ')
     conn.execute("INSERT INTO item (ticker, added_at) VALUES ('NEW', 'x')")
     assert 'not a candidate in this run' in explain(conn, 'NEW')
+
+
+def test_rank_top_includes_ties_and_fails_missing_data(conn):
+    run_id = run_screen(conn, profile(conn, 'name: r\nsteps:\n  - {metric: perf_1y, top: 1}\n'))
+    s1 = outcomes(conn, run_id, 1)
+    assert {t for t, o in s1.items() if o[0]} == {'BBB', 'CCC'}   # tied for rank 1: both kept
+    assert s1['BBB'][2] == {'perf_1y': -0.1, 'perf_1y_rank': 1}
+    assert s1['AAA'][1] == 'rank 3 of 5 by perf_1y (top 1 kept)'   # DDD has no value: not counted
+    assert s1['DDD'][1] == f'missing data: perf_1y (no metrics row as of {ASOF})'
+    step = conn.execute('SELECT description, n_in, n_passed FROM screen_step WHERE run_id = ?', (run_id,)).fetchone()
+    assert tuple(step) == ('top 1 by perf_1y', 6, 2)
+
+
+def test_rank_bottom_among_survivors_only(conn):
+    run_id = run_screen(conn, profile(conn, """
+name: r
+steps:
+  - {attr: exchange, op: in, value: [HE, ST, LSE]}
+  - label: lowest 3-year return
+    metric: perf_3y
+    bottom: 1
+"""))
+    s2 = outcomes(conn, run_id, 2)
+    assert set(s2) == {'AAA', 'BBB', 'CCC', 'EEE'}                # FFF and DDD dropped at step 1
+    assert s2['EEE'][:2] == (1, None)
+    assert s2['CCC'][1] == 'rank 2 of 2 by perf_3y (bottom 1 kept)'
+    assert s2['AAA'][1] == 'missing data: perf_3y'
+    text = explain(conn, 'CCC', run_id)
+    assert 'lowest 3-year return: bottom 1 by perf_3y' in text
+    assert 'perf_3y_rank = 2' in text
+
+
+def test_survivor_table_ordered_by_rank(conn):
+    run_id = run_screen(conn, profile(conn, 'name: r\nsteps:\n  - {metric: perf_1y, bottom: 3}\n'))
+    headers, rows = survivor_table(conn, run_id)
+    assert headers == ['ticker', 'name', 'perf_1y', 'perf_1y_rank']
+    assert [r[0] for r in rows] == ['EEE', 'FFF', 'AAA']            # rank order, ties by ticker
+
+
+def test_rerun_after_rank_step(conn):
+    text = 'name: r\nsteps:\n  - {metric: perf_1y, top: 3}\n  - {metric: perf_3m, op: "<", value: 0.1}\n'
+    first = run_screen(conn, profile(conn, text))
+    second = run_screen(conn, profile(conn, text.replace('0.1}', '0.5}')), from_step=2)
+    assert outcomes(conn, second, 1) == outcomes(conn, first, 1)
+    with pytest.raises(ValueError, match='step 1 differs'):
+        run_screen(conn, profile(conn, text.replace('top: 3', 'top: 2')), from_step=2)
 
 
 def test_prune_keeps_newest_per_profile(conn):
